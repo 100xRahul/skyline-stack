@@ -29,6 +29,17 @@ const floorsKey = (date: string) => `skyline:${date}:floors`;
 const buildersKey = (date: string) => `skyline:${date}:builders`;
 // Tracks which players landed a perfect run today (hash username -> "1").
 const perfectKey = (date: string) => `skyline:${date}:perfect`;
+// Owners of milestone floors (hash floorNumber -> username). First player to
+// cross a milestone floor owns it for the day.
+const ownersKey = (date: string) => `skyline:${date}:owners`;
+// Misc per-day flags (e.g. whether the goal-reached comment was posted).
+const metaKey = (date: string) => `skyline:${date}:meta`;
+
+// A floor number is a "milestone" worth claiming if it is a multiple of 5 or
+// it is exactly the day's community goal.
+function isMilestone(floor: number, goal: number): boolean {
+  return floor > 0 && (floor % 5 === 0 || floor === goal);
+}
 const personalKey = (date: string, username: string) =>
   `skyline:${date}:pb:${username.toLowerCase()}`;
 // Streak survives across days, so it is stored as a hash with the run count and
@@ -60,6 +71,28 @@ async function readLeaderboard(
 async function readStreak(username: string): Promise<number> {
   const data = await redis.hGetAll(streakKey(username));
   return data?.count ? parseInt(data.count, 10) : 0;
+}
+
+async function readFloorOwners(date: string): Promise<Record<string, string>> {
+  return (await redis.hGetAll(ownersKey(date))) ?? {};
+}
+
+// Post the once-per-day "goal reached" comment on the post, as the app account.
+// Names the top builder so the announcement is recognisably community-driven.
+async function announceGoal(
+  postId: string,
+  date: string,
+  floors: number
+): Promise<void> {
+  const top = await readLeaderboard(date, 1);
+  const builders = await redis.zCard(buildersKey(date));
+  const topLine =
+    top.length > 0 ? ` Top builder: u/${top[0]!.username} (${top[0]!.floors} floors).` : '';
+  const text =
+    `🏙️ The skyline topped out! Together you stacked ${floors} floors today` +
+    ` and reached the goal — ${builders} builder${builders === 1 ? '' : 's'} so far.` +
+    `${topLine} A fresh challenge unlocks at 00:00 UTC. Tap the post to add your floors.`;
+  await reddit.submitComment({ id: postId as `t3_${string}`, text, runAs: 'APP' });
 }
 
 // True if the community reached its goal on the given UTC date. Used to unlock
@@ -100,6 +133,7 @@ api.get('/init', async (c) => {
       !!lastDay && lastDay === yesterdayUtc() && streak > 0;
     const builders = await redis.zCard(buildersKey(date));
     const leaderboard = await readLeaderboard(date, 10);
+    const floorOwners = await readFloorOwners(date);
 
     return c.json<InitResponse>({
       type: 'init',
@@ -112,6 +146,7 @@ api.get('/init', async (c) => {
       builders,
       leaderboard,
       streakAtRisk,
+      floorOwners,
     });
   } catch (err) {
     console.error('init failed', err);
@@ -188,8 +223,44 @@ api.post('/submit', async (c) => {
 
     const goal = buildDailySeed(date, after).communityGoal;
     const goalReached = after >= goal;
+    const before = after - floors;
+
+    // Claim any milestone floors this run crossed (community floors in the range
+    // before < floor <= after). First player to cross a milestone owns it.
+    const claimedFloors: number[] = [];
+    if (floors > 0) {
+      for (let floor = before + 1; floor <= after; floor++) {
+        if (!isMilestone(floor, goal)) continue;
+        const claimed = await redis.hSetNX(
+          ownersKey(date),
+          String(floor),
+          username
+        );
+        if (claimed === 1) claimedFloors.push(floor);
+      }
+      if (claimedFloors.length > 0) {
+        await redis.expire(ownersKey(date), DAILY_TTL_SECONDS);
+      }
+    }
+
+    // Goal-reached celebration comment, posted once per day by the app account.
+    // hSetNX guarantees only the first run that tips the tower over the goal
+    // triggers it. Best-effort: a failure here never fails the run.
+    if (goalReached) {
+      try {
+        const first = await redis.hSetNX(metaKey(date), 'goalAnnounced', '1');
+        if (first === 1) {
+          await redis.expire(metaKey(date), DAILY_TTL_SECONDS);
+          await announceGoal(postId, date, after);
+        }
+      } catch (e) {
+        console.error('goal announce failed', e);
+      }
+    }
+
     const builders = await redis.zCard(buildersKey(date));
     const leaderboard = await readLeaderboard(date, 10);
+    const floorOwners = await readFloorOwners(date);
 
     return c.json<SubmitResponse>({
       type: 'submit',
@@ -201,6 +272,8 @@ api.post('/submit', async (c) => {
       streak,
       builders,
       leaderboard,
+      claimedFloors,
+      floorOwners,
     });
   } catch (err) {
     console.error('submit failed', err);

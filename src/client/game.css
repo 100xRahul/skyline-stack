@@ -13,6 +13,12 @@
   user-select: none;
 }
 
+/* The `hidden` attribute must win over component `display` rules (e.g. the
+   goal/tutorial banners set display:flex, which would otherwise override it). */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;

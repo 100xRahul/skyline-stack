@@ -91,6 +91,7 @@ async function runChecks(label, contextOptions) {
             builders: 4,
             streakAtRisk: true,
             leaderboard,
+            floorOwners: { 5: 'somebody', 10: 'smoketester' },
             daily: {
               date: '2026-06-21',
               paletteId: 0,
@@ -116,6 +117,8 @@ async function runChecks(label, contextOptions) {
             streak: 1,
             builders: 2,
             leaderboard,
+            claimedFloors: [5],
+            floorOwners: { 5: 'smoketester', 10: 'smoketester' },
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );

@@ -6,7 +6,12 @@ import type {
   LeaderboardEntry,
   SubmitResponse,
 } from '../../shared/api';
-import { PALETTES, dailyChallengeName } from '../../shared/seed';
+import {
+  PALETTES,
+  dailyChallengeName,
+  hashString,
+  mulberry32,
+} from '../../shared/seed';
 import { audio } from '../audio';
 
 // Width of the play column relative to the game world. The camera stays focused
@@ -72,12 +77,18 @@ type Particle = Phaser.GameObjects.Rectangle;
 export class GameScene extends Scene {
   private camera!: Phaser.Cameras.Scene2D.Camera;
   private background!: Phaser.GameObjects.Graphics;
+  private starLayer!: Phaser.GameObjects.Graphics;
+  private cityLayer!: Phaser.GameObjects.Graphics;
   private platformGraphics!: Phaser.GameObjects.Graphics;
   private particleLayer!: Phaser.GameObjects.Graphics;
   private windowLayer!: Phaser.GameObjects.Graphics;
   private pbGhostGraphics: Phaser.GameObjects.Graphics | null = null;
   private pbGhostLabel: Phaser.GameObjects.Text | null = null;
   private pbGhost: number | null = null;
+  // Milestone floor owners (floor number -> username) and their rendered tags.
+  private floorOwners: Record<string, string> = {};
+  private floorOwnerLabels: Phaser.GameObjects.Text[] = [];
+  private claimedFloors: number[] = [];
 
   private daily!: DailySeed;
   private communityFloors = 0;
@@ -121,6 +132,17 @@ export class GameScene extends Scene {
     this.background = this.add.graphics();
     this.background.setScrollFactor(0);
     this.background.setDepth(-10);
+
+    // Star field for night palettes — fixed to the viewport (scrollFactor 0).
+    this.starLayer = this.add.graphics();
+    this.starLayer.setScrollFactor(0);
+    this.starLayer.setDepth(-9);
+
+    // Parallax skyline silhouette behind the play column. ScrollFactor < 1 so
+    // it drifts slower than the tower as the camera climbs.
+    this.cityLayer = this.add.graphics();
+    this.cityLayer.setScrollFactor(0.35);
+    this.cityLayer.setDepth(-5);
 
     this.platformGraphics = this.add.graphics();
     this.platformGraphics.setDepth(0);
@@ -275,6 +297,7 @@ export class GameScene extends Scene {
     this.builders = init.builders;
     this.leaderboard = init.leaderboard;
     this.username = init.username;
+    this.floorOwners = init.floorOwners ?? {};
     // Server can hint when a streak is "at risk" — set by /api/init so the
     // overlay and HUD can nudge the player back.
     this.streakAtRisk = init.streakAtRisk ?? false;
@@ -336,11 +359,32 @@ export class GameScene extends Scene {
     if (banner) banner.hidden = true;
   }
 
+  // Returns 1 at solar noon (12:00 UTC) and 0 at midnight, on a smooth cosine
+  // curve. Drives a real day/night tint so the live game looks different across
+  // the day even within one palette.
+  private daynessFactor(): number {
+    const hour = new Date().getUTCHours() + new Date().getUTCMinutes() / 60;
+    return (Math.cos(((hour - 12) * Math.PI) / 12) + 1) / 2;
+  }
+
+  // Darken a color toward black by `mix` (0 = unchanged, 1 = black).
+  private darken(color: Phaser.Display.Color, mix: number): number {
+    const k = 1 - mix;
+    return Phaser.Display.Color.GetColor(
+      Math.round(color.red * k),
+      Math.round(color.green * k),
+      Math.round(color.blue * k)
+    );
+  }
+
   private paintBackground() {
     const palette = PALETTES[this.daily.paletteId];
     const { width, height } = this.scale;
     const g = this.background;
     g.clear();
+    const dayness = this.daynessFactor();
+    // Night darkens the sky up to 55%; the aurora palette glows so it darkens less.
+    const nightMix = (1 - dayness) * (this.daily.paletteId === 3 ? 0.32 : 0.55);
     // Vertical gradient — sky color at top, mid color near horizon, shadow at base.
     const steps = 24;
     const top = Phaser.Display.Color.HexStringToColor(palette.sky);
@@ -354,16 +398,77 @@ export class GameScene extends Scene {
         1,
         t < 0.5 ? t * 2 : (t - 0.5) * 2
       );
-      const color = Phaser.Display.Color.GetColor(c.r, c.g, c.b);
+      const color = this.darken(
+        new Phaser.Display.Color(c.r, c.g, c.b),
+        nightMix
+      );
       g.fillStyle(color, 1);
       g.fillRect(0, (height * i) / steps, width, height / steps + 1);
     }
-    // Soft sun/moon disk — gives each palette a distinct horizon accent.
+    // Sun by day, moon by night — the disk rides across the horizon by hour and
+    // fades between warm (sun) and pale (moon).
     const horizonY = height * 0.35;
     const diskR = Math.min(width, height) * 0.18;
+    const hour = new Date().getUTCHours() + new Date().getUTCMinutes() / 60;
+    const diskX = width * (0.12 + (hour / 24) * 0.76);
     const diskColor = Phaser.Display.Color.HexStringToColor(palette.block);
-    g.fillStyle(diskColor.color, 0.55);
-    g.fillCircle(width * 0.5, horizonY, diskR);
+    g.fillStyle(diskColor.color, 0.4 + dayness * 0.25);
+    g.fillCircle(diskX, horizonY, diskR * (0.7 + dayness * 0.3));
+
+    this.drawStars(dayness);
+    this.drawParallaxCity(nightMix);
+  }
+
+  // Sparse star field that fades in as night falls. Deterministic positions from
+  // the daily seed so they don't jump around between repaints.
+  private drawStars(dayness: number) {
+    const g = this.starLayer;
+    g.clear();
+    const alpha = Phaser.Math.Clamp((0.5 - dayness) * 2, 0, 1);
+    if (alpha <= 0.02) return;
+    const { width, height } = this.scale;
+    const rng = mulberry32(hashString('stars:' + this.daily.date));
+    g.fillStyle(0xffffff, alpha * 0.9);
+    for (let i = 0; i < 60; i++) {
+      const x = rng() * width;
+      const y = rng() * height * 0.5;
+      const r = rng() * 1.4 + 0.4;
+      g.fillCircle(x, y, r);
+    }
+  }
+
+  // A row of building silhouettes along the horizon, deterministic per day.
+  // Rendered into the parallax layer (scrollFactor 0.35) so it drifts as the
+  // camera climbs the tower.
+  private drawParallaxCity(nightMix: number) {
+    const g = this.cityLayer;
+    g.clear();
+    const { width, height } = this.scale;
+    const palette = PALETTES[this.daily.paletteId];
+    const base = Phaser.Display.Color.HexStringToColor(palette.shadow);
+    const silhouette = this.darken(base, 0.25 + nightMix * 0.4);
+    const litCol = Phaser.Display.Color.HexStringToColor(palette.mid).color;
+    const groundY = height * 0.72;
+    const rng = mulberry32(hashString('city:' + this.daily.date));
+    let x = -20;
+    while (x < width + 20) {
+      const bw = 26 + rng() * 46;
+      const bh = 50 + rng() * 150;
+      const by = groundY - bh;
+      g.fillStyle(silhouette, 0.92);
+      g.fillRect(x, by, bw, bh + height); // extend below so parallax never reveals a gap
+      // A few lit windows on the silhouette for life.
+      const cols = Math.max(1, Math.floor(bw / 14));
+      const rows = Math.max(1, Math.floor(bh / 22));
+      for (let r = 0; r < rows; r++) {
+        for (let cc = 0; cc < cols; cc++) {
+          if (rng() > 0.5) continue;
+          g.fillStyle(litCol, 0.35);
+          g.fillRect(x + 5 + cc * 14, by + 6 + r * 22, 5, 7);
+        }
+      }
+      x += bw + 8 + rng() * 14;
+    }
   }
 
   private seedGhostFloors() {
@@ -373,6 +478,8 @@ export class GameScene extends Scene {
     this.windowLayer.clear();
     this.pbGhostGraphics?.clear();
     this.pbGhost = null;
+    this.floorOwnerLabels.forEach((l) => l.destroy());
+    this.floorOwnerLabels = [];
     const ghostCount = Math.min(
       this.daily.communityFloors,
       Math.floor(this.scale.height * GHOST_FLOOR_RATIO / PLATFORM_HEIGHT)
@@ -404,6 +511,40 @@ export class GameScene extends Scene {
     this.drawStacks();
     // Render the PB ghost line if the player has set a personal best today.
     this.drawPbGhost();
+    // Render owner name tags on milestone ghost floors.
+    this.drawFloorOwners(ghostCount, baseY);
+  }
+
+  // Tag milestone floors with the redditor who claimed them. Ghost i (0 = top,
+  // newest) maps to community floor number (communityFloors - i), so the most
+  // recent milestones sit highest on the visible tower.
+  private drawFloorOwners(ghostCount: number, baseY: number) {
+    const owners = this.floorOwners;
+    if (!owners || Object.keys(owners).length === 0) return;
+    for (let i = 0; i < ghostCount; i++) {
+      const floorNumber = this.communityFloors - i;
+      const owner = owners[String(floorNumber)];
+      if (!owner) continue;
+      const y = baseY + i * PLATFORM_HEIGHT;
+      const mine = owner.toLowerCase() === this.username.toLowerCase();
+      const label = this.add
+        .text(
+          this.scale.width / 2,
+          y,
+          `🏗 ${floorNumber} · u/${owner}`,
+          {
+            fontFamily: 'Arial',
+            fontSize: '11px',
+            color: mine ? '#ffd166' : '#ffffff',
+            backgroundColor: 'rgba(8, 10, 26, 0.55)',
+            padding: { x: 5, y: 1 } as Phaser.Types.GameObjects.Text.TextPadding,
+          }
+        )
+        .setOrigin(0.5, 0.5)
+        .setDepth(6)
+        .setAlpha(mine ? 0.95 : 0.7);
+      this.floorOwnerLabels.push(label);
+    }
   }
 
   // Personal-best ghost marker. If the player already has a daily PB, draw
@@ -576,6 +717,9 @@ export class GameScene extends Scene {
     }
     if (this.currentBlock) this.currentBlock.destroy();
     if (this.currentShadow) this.currentShadow.destroy();
+    this.camera.stopFollow();
+    this.camera.setZoom(1);
+    this.camera.scrollX = 0;
     this.camera.scrollY = 0;
     this.seedGhostFloors();
     this.updateHud();
@@ -816,6 +960,8 @@ export class GameScene extends Scene {
     this.streak = data.streak;
     this.builders = data.builders;
     this.leaderboard = data.leaderboard;
+    this.floorOwners = data.floorOwners ?? this.floorOwners;
+    this.claimedFloors = data.claimedFloors ?? [];
     this.updateHud();
     if (data.goalReached && !this.goalCelebrated) {
       this.goalCelebrated = true;
@@ -824,7 +970,40 @@ export class GameScene extends Scene {
       this.showGoalBanner();
       this.celebrationBurst();
     }
-    this.endRun(data);
+    // On a run worth showing off, pull the camera back for a "money shot" of the
+    // whole tower against the skyline before the summary overlay slides in.
+    const placed = this.stacks.filter((s) => !s.isGhost).length - 1;
+    if (placed >= 3) {
+      this.moneyShot(() => this.endRun(data));
+    } else {
+      this.endRun(data);
+    }
+  }
+
+  // Frame the entire tower in view: zoom out and pan to its centre, hold, then
+  // run the callback (which shows the end overlay).
+  private moneyShot(done: () => void) {
+    const solid = this.stacks;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const s of solid) {
+      minY = Math.min(minY, s.y - PLATFORM_HEIGHT);
+      maxY = Math.max(maxY, s.y + PLATFORM_HEIGHT);
+    }
+    if (!isFinite(minY) || !isFinite(maxY)) {
+      done();
+      return;
+    }
+    const towerH = maxY - minY;
+    const centerY = (minY + maxY) / 2;
+    const targetZoom = Phaser.Math.Clamp(
+      (this.scale.height * 0.82) / towerH,
+      0.42,
+      1
+    );
+    this.camera.zoomTo(targetZoom, 600, 'Cubic.easeOut');
+    this.camera.pan(this.scale.width / 2, centerY, 600, 'Cubic.easeOut');
+    this.time.delayedCall(820, done);
   }
 
   // Goal-reached celebration: a confetti burst of golden particles raining
@@ -890,6 +1069,12 @@ export class GameScene extends Scene {
     );
     if (perfect) summaryLines.push(`<div class="summary-row" style="color:#ffd166"><span class="label">Perfect run</span><span class="value">all clean</span></div>`);
     if (goal) summaryLines.push(`<div class="summary-row" style="color:#06d6a0"><span class="label">Sub goal</span><span class="value">REACHED 🎉</span></div>`);
+    if (this.claimedFloors.length > 0) {
+      const list = this.claimedFloors.join(', ');
+      summaryLines.push(
+        `<div class="summary-row" style="color:#ffd166"><span class="label">Claimed floor${this.claimedFloors.length > 1 ? 's' : ''}</span><span class="value">🏗 ${list}</span></div>`
+      );
+    }
 
     // Share templates — three short, pre-written comments the player can post
     // on the post. The form endpoint is fixed-template (no free text), so

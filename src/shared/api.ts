@@ -46,6 +46,10 @@ export type InitResponse = {
   leaderboard: LeaderboardEntry[];
   // True if the player has a streak that needs playing today to keep alive.
   streakAtRisk: boolean;
+  // Owners of milestone floors in the shared tower: floor number -> username.
+  // Rendered as named tags on the ghost tower so contributions are visible
+  // and "owned". Only milestone floors (every 5th + the goal floor) are kept.
+  floorOwners: Record<string, string>;
 };
 
 export type SubmitResponse = {
@@ -66,6 +70,11 @@ export type SubmitResponse = {
   builders: number;
   // Today's top contributors after this run was merged.
   leaderboard: LeaderboardEntry[];
+  // Milestone floor numbers this run claimed for the player (first to cross
+  // each milestone owns it). Empty when the run claimed nothing.
+  claimedFloors: number[];
+  // Updated owners of milestone floors after this run: floor number -> username.
+  floorOwners: Record<string, string>;
 };
 
 export type LeaderboardEntry = {
