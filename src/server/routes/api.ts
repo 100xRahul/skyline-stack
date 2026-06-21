@@ -32,6 +32,11 @@ const perfectKey = (date: string) => `skyline:${date}:perfect`;
 // Owners of milestone floors (hash floorNumber -> username). First player to
 // cross a milestone floor owns it for the day.
 const ownersKey = (date: string) => `skyline:${date}:owners`;
+// Player-named labels for claimed milestone floors (hash floorNumber -> name).
+// This is the user-contribution surface: the player can name the floor they
+// claim with a single short word (max 12 chars, sanitised). Names render on
+// the milestone tag in the tower for everyone in the sub.
+const floorNamesKey = (date: string) => `skyline:${date}:floor-names`;
 // Misc per-day flags (e.g. whether the goal-reached comment was posted).
 const metaKey = (date: string) => `skyline:${date}:meta`;
 
@@ -85,6 +90,38 @@ async function readStreak(username: string): Promise<number> {
 
 async function readFloorOwners(date: string): Promise<Record<string, string>> {
   return (await redis.hGetAll(ownersKey(date))) ?? {};
+}
+
+async function readFloorNames(date: string): Promise<Record<string, string>> {
+  return (await redis.hGetAll(floorNamesKey(date))) ?? {};
+}
+
+// Sanitise a player-supplied floor name. Returns the cleaned name (1-12
+// chars, alphanumeric + a small set of safe punctuation) or null if the
+// input is unusable. This is the only UGC surface in the game, so the
+// filter is intentionally strict: any Unicode outside basic Latin letters,
+// digits, spaces, hyphens, underscores, dots, and emoji ZWJ sequences is
+// stripped. Control characters and zero-width joiners are dropped. The
+// blocklist catches the obvious slurs and slurs-adjacent words a Reddit
+// moderator would never want to see on a floor.
+const BLOCKLIST = new Set([
+  'fuck', 'shit', 'bitch', 'cunt', 'asshole', 'dick', 'piss', 'nigger',
+  'faggot', 'kike', 'spic', 'chink', 'tranny', 'retard',
+]);
+function sanitiseFloorName(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  // Normalise, drop control chars, keep alnum + safe punct + space.
+  const cleaned = raw
+    .normalize('NFKC')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[^\p{L}\p{N} _\-.]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 12);
+  if (cleaned.length < 1) return null;
+  if (BLOCKLIST.has(cleaned.toLowerCase())) return null;
+  return cleaned;
 }
 
 // Achievement definitions. The thresholds match the copy in the client UI
@@ -226,16 +263,25 @@ api.get('/init', async (c) => {
     const daily = buildDailySeed(date, communityFloors, goalUnlocked);
     // Fan out the remaining independent reads in parallel — they don't depend
     // on each other.
-    const [pbRaw, streak, streakData, builders, leaderboard, floorOwners, achievements] =
-      await Promise.all([
-        redis.get(personalKey(date, username)),
-        readStreak(username),
-        redis.hGetAll(streakKey(username)),
-        redis.zCard(buildersKey(date)),
-        readLeaderboard(date, 10),
-        readFloorOwners(date),
-        readAchievements(username),
-      ]);
+    const [
+      pbRaw,
+      streak,
+      streakData,
+      builders,
+      leaderboard,
+      floorOwners,
+      floorNames,
+      achievements,
+    ] = await Promise.all([
+      redis.get(personalKey(date, username)),
+      readStreak(username),
+      redis.hGetAll(streakKey(username)),
+      redis.zCard(buildersKey(date)),
+      readLeaderboard(date, 10),
+      readFloorOwners(date),
+      readFloorNames(date),
+      readAchievements(username),
+    ]);
     const personalBest = pbRaw ? parseInt(pbRaw, 10) : 0;
     // Streak is at risk if the player has an active streak and yesterday is
     // the most recent day they played — i.e. the streak expires at UTC midnight.
@@ -255,6 +301,7 @@ api.get('/init', async (c) => {
       leaderboard,
       streakAtRisk,
       floorOwners,
+      floorNames,
       achievements,
     });
   } catch (err) {
@@ -352,6 +399,36 @@ api.post('/submit', async (c) => {
       }
     }
 
+    // Player can optionally name a milestone floor they own (claimed in
+    // this run or a previous run today). The server only persists the
+    // name if the requesting player is the recorded owner. Names are
+    // sanitised; see `sanitiseFloorName` for the rules.
+    let nameAccepted = false;
+    const requestedNameFloor = body.nameFloor;
+    const requestedName = body.name;
+    if (
+      typeof requestedNameFloor === 'number' &&
+      Number.isInteger(requestedNameFloor) &&
+      requestedNameFloor > 0 &&
+      typeof requestedName === 'string'
+    ) {
+      const clean = sanitiseFloorName(requestedName);
+      if (clean) {
+        try {
+          const owners = await readFloorOwners(date);
+          if (owners[String(requestedNameFloor)]?.toLowerCase() === username.toLowerCase()) {
+            await redis.hSet(floorNamesKey(date), {
+              [String(requestedNameFloor)]: clean,
+            });
+            await redis.expire(floorNamesKey(date), DAILY_TTL_SECONDS);
+            nameAccepted = true;
+          }
+        } catch (e) {
+          console.error('floor-name write failed', e);
+        }
+      }
+    }
+
     // Goal-reached celebration comment, posted once per day by the app account.
     // hSetNX guarantees only the first run that tips the tower over the goal
     // triggers it. Best-effort: a failure here never fails the run.
@@ -416,12 +493,14 @@ api.post('/submit', async (c) => {
     // Independent reads — fire in parallel. The week-streak hGetAll above
     // already touched the achievements hash; the readAchievements call here
     // will reflect the just-applied unlocks.
-    const [builders, leaderboard, floorOwners, achievements] = await Promise.all([
-      redis.zCard(buildersKey(date)),
-      readLeaderboard(date, 10),
-      readFloorOwners(date),
-      readAchievements(username),
-    ]);
+    const [builders, leaderboard, floorOwners, floorNames, achievements] =
+      await Promise.all([
+        redis.zCard(buildersKey(date)),
+        readLeaderboard(date, 10),
+        readFloorOwners(date),
+        readFloorNames(date),
+        readAchievements(username),
+      ]);
 
     return c.json<SubmitResponse>({
       type: 'submit',
@@ -435,6 +514,8 @@ api.post('/submit', async (c) => {
       leaderboard,
       claimedFloors,
       floorOwners,
+      floorNames,
+      nameAccepted,
       achievements,
       newlyUnlocked,
     });

@@ -86,6 +86,7 @@ export class GameScene extends Scene {
   private pbGhost: number | null = null;
   // Milestone floor owners (floor number -> username) and their rendered tags.
   private floorOwners: Record<string, string> = {};
+  private floorNames: Record<string, string> = {};
   private floorOwnerLabels: Phaser.GameObjects.Text[] = [];
   private claimedFloors: number[] = [];
 
@@ -361,6 +362,7 @@ export class GameScene extends Scene {
     this.leaderboard = init.leaderboard;
     this.username = init.username;
     this.floorOwners = init.floorOwners ?? {};
+    this.floorNames = init.floorNames ?? {};
     this.achievements = init.achievements ?? [];
     // Server can hint when a streak is "at risk" — set by /api/init so the
     // overlay and HUD can nudge the player back.
@@ -582,34 +584,40 @@ export class GameScene extends Scene {
 
   // Tag milestone floors with the redditor who claimed them. Ghost i (0 = top,
   // newest) maps to community floor number (communityFloors - i), so the most
-  // recent milestones sit highest on the visible tower.
+  // recent milestones sit highest on the visible tower. If the claimer named
+  // the floor, the player-chosen label shows after the username.
   private drawFloorOwners(ghostCount: number, baseY: number) {
     const owners = this.floorOwners;
     if (!owners || Object.keys(owners).length === 0) return;
+    const names = this.floorNames;
     for (let i = 0; i < ghostCount; i++) {
       const floorNumber = this.communityFloors - i;
       const owner = owners[String(floorNumber)];
       if (!owner) continue;
       const y = baseY + i * PLATFORM_HEIGHT;
       const mine = owner.toLowerCase() === this.username.toLowerCase();
+      const customName = names?.[String(floorNumber)];
+      const labelText = customName
+        ? `🏗 ${floorNumber} · u/${owner} · "${this.truncate(customName, 10)}"`
+        : `🏗 ${floorNumber} · u/${owner}`;
       const label = this.add
-        .text(
-          this.scale.width / 2,
-          y,
-          `🏗 ${floorNumber} · u/${owner}`,
-          {
-            fontFamily: 'Arial',
-            fontSize: '11px',
-            color: mine ? '#ffd166' : '#ffffff',
-            backgroundColor: 'rgba(8, 10, 26, 0.55)',
-            padding: { x: 5, y: 1 } as Phaser.Types.GameObjects.Text.TextPadding,
-          }
-        )
+        .text(this.scale.width / 2, y, labelText, {
+          fontFamily: 'Arial',
+          fontSize: '11px',
+          color: mine ? '#ffd166' : '#ffffff',
+          backgroundColor: 'rgba(8, 10, 26, 0.55)',
+          padding: { x: 5, y: 1 } as Phaser.Types.GameObjects.Text.TextPadding,
+        })
         .setOrigin(0.5, 0.5)
         .setDepth(6)
         .setAlpha(mine ? 0.95 : 0.7);
       this.floorOwnerLabels.push(label);
     }
+  }
+
+  private truncate(s: string, max: number) {
+    if (s.length <= max) return s;
+    return s.slice(0, max - 1) + '…';
   }
 
   // Personal-best ghost marker. If the player already has a daily PB, draw
@@ -1026,6 +1034,7 @@ export class GameScene extends Scene {
     this.builders = data.builders;
     this.leaderboard = data.leaderboard;
     this.floorOwners = data.floorOwners ?? this.floorOwners;
+    this.floorNames = data.floorNames ?? this.floorNames;
     this.claimedFloors = data.claimedFloors ?? [];
     this.achievements = data.achievements ?? this.achievements;
     this.updateHud();
@@ -1162,6 +1171,30 @@ export class GameScene extends Scene {
       );
     }
 
+    // If the player owns at least one milestone floor, surface a small
+    // "name a floor" panel. This is the user-contribution surface: the
+    // player picks which floor to name and types a short word. The
+    // resulting label shows on the tower for the rest of the sub to see.
+    const nameableFloors = this.collectNameableFloors();
+    if (nameableFloors.length > 0) {
+      const options = nameableFloors
+        .map((f) => {
+          const current = this.floorNames[String(f)];
+          const label = current ? `${f} (now "${this.escapeHtml(current)}")` : `${f}`;
+          return `<option value="${f}">${label}</option>`;
+        })
+        .join('');
+      summaryLines.push(`<div class="summary-block">
+        <div class="summary-block-title">Name a floor you own</div>
+        <div class="name-floor-row">
+          <select id="name-floor-pick" class="name-floor-pick">${options}</select>
+          <input id="name-floor-input" class="name-floor-input" type="text" maxlength="12" placeholder="e.g. Apex, ⭐" />
+          <button id="name-floor-submit" class="name-floor-submit" type="button">Save</button>
+        </div>
+        <div id="name-floor-status" class="name-floor-status"></div>
+      </div>`);
+    }
+
     // Share templates — three short, pre-written comments the player can post
     // on the post. The form endpoint is fixed-template (no free text), so
     // moderation/abuse is bounded by the templates themselves.
@@ -1191,27 +1224,142 @@ export class GameScene extends Scene {
       leaderboardHtml: this.leaderboardHtml(),
       rivalHtml: this.rivalHtml(),
     });
-    // Wire the share buttons to a server-side form. The Devvit form handler
-    // we registered is fixed-template, so this is a single click → toast.
+    // Wire the share buttons to the server endpoint that posts a real
+    // Reddit comment with the player's actual floor count and the day's
+    // named challenge filled into a fixed-template comment.
+    const dayName = dailyChallengeName(this.daily.date);
     document
       .querySelectorAll<HTMLButtonElement>('#overlay-share .share-btn')
       .forEach((btn) => {
         btn.onclick = async (e) => {
           e.stopPropagation();
-          const choice = btn.getAttribute('data-share') ?? '1';
+          const choice = parseInt(btn.getAttribute('data-share') ?? '1', 10);
           try {
-            await fetch('/internal/form/share-result', {
+            const res = await fetch('/api/share-result', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ message: choice }),
+              body: JSON.stringify({
+                template: Number.isFinite(choice) ? choice : 1,
+                floors: placedFloors,
+                dayName,
+              }),
             });
-            btn.textContent = '✓ Queued';
+            if (res.ok) {
+              btn.textContent = '✓ Posted';
+            } else {
+              btn.textContent = 'Try again';
+            }
             btn.disabled = true;
           } catch {
             btn.textContent = 'Try again';
           }
         };
       });
+
+    // Wire the floor-naming panel. The player picks which milestone they
+    // want to name, types a short word, and the server stores it after
+    // confirming the player owns that floor. The updated name shows on
+    // the tower for everyone in the sub.
+    this.wireNameFloorPanel(placedFloors, goal, perfect);
+  }
+
+  // Floors the player owns today and can rename. Combines floors claimed
+  // in this run with milestone floors the player already owned before
+  // the run started.
+  private collectNameableFloors(): number[] {
+    const owned = new Set<number>();
+    for (const [k, name] of Object.entries(this.floorOwners)) {
+      if (name.toLowerCase() === this.username.toLowerCase()) {
+        owned.add(parseInt(k, 10));
+      }
+    }
+    for (const f of this.claimedFloors) owned.add(f);
+    return Array.from(owned).sort((a, b) => a - b);
+  }
+
+  private wireNameFloorPanel(placedFloors: number, goal: boolean, perfect: boolean) {
+    const btn = document.getElementById('name-floor-submit') as HTMLButtonElement | null;
+    const input = document.getElementById('name-floor-input') as HTMLInputElement | null;
+    const select = document.getElementById('name-floor-pick') as HTMLSelectElement | null;
+    const status = document.getElementById('name-floor-status') as HTMLDivElement | null;
+    if (!btn || !input || !select || !status) return;
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const floor = parseInt(select.value, 10);
+      const name = input.value.trim();
+      if (!Number.isFinite(floor) || floor <= 0 || name.length === 0) {
+        status.textContent = 'Pick a floor and enter a name.';
+        return;
+      }
+      btn.disabled = true;
+      status.textContent = 'Saving…';
+      try {
+        // We piggy-back on the /api/submit endpoint by submitting a 0-floor
+        // run with nameFloor/name. The server validates ownership and
+        // returns nameAccepted=true on success. To preserve the actual
+        // run stats we already sent, we open a separate fetch and don't
+        // touch this.score.
+        const res = await fetch('/api/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            floors: 0,
+            perfect: false,
+            nameFloor: floor,
+            name,
+          }),
+        });
+        if (!res.ok) {
+          status.textContent = "Couldn't save. Try again.";
+          btn.disabled = false;
+          return;
+        }
+        const data = (await res.json()) as { nameAccepted: boolean; floorNames: Record<string, string> };
+        if (data.nameAccepted) {
+          this.floorNames = data.floorNames;
+          status.textContent = `Saved — floor ${floor} is now "${name}".`;
+          input.value = '';
+          // Re-render the milestone tags so the new name shows on the
+          // tower immediately.
+          this.refreshFloorOwnerLabels();
+        } else {
+          status.textContent = "Couldn't claim that floor. Pick one you own.";
+          btn.disabled = false;
+        }
+      } catch {
+        status.textContent = 'Network error. Try again.';
+        btn.disabled = false;
+      }
+    };
+    // Avoid tap-anywhere on the overlay card dismissing the panel.
+    btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    input.addEventListener('pointerdown', (e) => e.stopPropagation());
+    select.addEventListener('pointerdown', (e) => e.stopPropagation());
+    // Quietly satisfy the linter about unused params.
+    void placedFloors;
+    void goal;
+    void perfect;
+  }
+
+  // Clear and redraw the milestone owner tags so a freshly-saved name
+  // shows up immediately. The next paintBackground() will call this
+  // naturally, but the player just renamed a floor — they should see it
+  // now.
+  private refreshFloorOwnerLabels() {
+    for (const lbl of this.floorOwnerLabels) lbl.destroy();
+    this.floorOwnerLabels = [];
+    if (this.stacks.length === 0) return;
+    // The first non-ghost stack is the run's "floor 1" — the rest are the
+    // ghost tower mirrored from the community total. We re-draw against
+    // the same layout the original draw used.
+    const ghostCount = this.stacks.filter((s) => s.isGhost).length;
+    if (ghostCount === 0) return;
+    // baseY matches drawStacks: first ghost sits on top of the player's
+    // first placed block, with PLATFORM_HEIGHT between each. We use a
+    // simple anchor: the bottommost ghost is at the same y as the last
+    // placed block + PLATFORM_HEIGHT.
+    const baseY = this.stacks[this.stacks.length - 1]?.y ?? 0;
+    this.drawFloorOwners(ghostCount, baseY);
   }
 
   // Build the "Today's builders" leaderboard markup from the latest server data.

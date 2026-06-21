@@ -27,6 +27,12 @@ export type ScoreSubmission = {
   floors: number;
   // True when every block was placed with zero overhang (a "perfect" run).
   perfect: boolean;
+  // Optional: the player can name a milestone floor they own in this run
+  // (or a milestone floor they already own from a previous run today).
+  // The server sanitises the name and only persists it if the player is
+  // the recorded owner of that floor. Floor + name travel together.
+  nameFloor?: number;
+  name?: string;
 };
 
 export type InitResponse = {
@@ -50,6 +56,11 @@ export type InitResponse = {
   // Rendered as named tags on the ghost tower so contributions are visible
   // and "owned". Only milestone floors (every 5th + the goal floor) are kept.
   floorOwners: Record<string, string>;
+  // Player-named labels for the milestone floors: floor number -> name.
+  // This is the user-contribution surface — every claimer can name their
+  // floor with a single short word, and the name renders on the tower for
+  // the rest of the sub to see.
+  floorNames: Record<string, string>;
   // Persistent achievements. Each is a 1-line definition the client renders
   // and a boolean `unlocked`. Progress is for the "almost there" case.
   achievements: AchievementState[];
@@ -95,6 +106,13 @@ export type SubmitResponse = {
   claimedFloors: number[];
   // Updated owners of milestone floors after this run: floor number -> username.
   floorOwners: Record<string, string>;
+  // Updated floor-name map: floor number -> name. The map is the
+  // server's record of what every claimed floor is named.
+  floorNames: Record<string, string>;
+  // True when the player's name was accepted and stored for the requested
+  // floor. False when the floor isn't owned by them or the name was
+  // rejected by the sanitiser.
+  nameAccepted: boolean;
   // Current state of every achievement (unlocked + progress) for the player.
   achievements: AchievementState[];
   // Achievement ids unlocked by THIS run. Empty when none.

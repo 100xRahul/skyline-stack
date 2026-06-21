@@ -613,6 +613,60 @@ body {
   text-overflow: ellipsis;
 }
 
+/* "Name a floor you own" panel — the user-contribution surface. */
+.name-floor-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.name-floor-pick,
+.name-floor-input {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  color: #fff;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  outline: none;
+}
+.name-floor-pick {
+  flex-shrink: 0;
+  max-width: 90px;
+}
+.name-floor-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.name-floor-pick:focus,
+.name-floor-input:focus {
+  border-color: #ffd166;
+}
+.name-floor-submit {
+  background: #ffd166;
+  color: #1a1a2e;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+}
+.name-floor-submit:disabled {
+  background: rgba(255, 209, 102, 0.3);
+  color: rgba(255, 255, 255, 0.6);
+  cursor: default;
+}
+.name-floor-status {
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+  min-height: 14px;
+}
+
 #overlay-leaderboard {
   width: 100%;
   margin-top: 4px;
