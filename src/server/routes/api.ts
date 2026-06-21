@@ -46,8 +46,18 @@ const personalKey = (date: string, username: string) =>
 // the last UTC day the player contributed. It is not part of the daily reset.
 const streakKey = (username: string) =>
   `skyline:streak:${username.toLowerCase()}`;
+// Lifetime totals (all-time floors, perfects, runs). Persistent across days.
+const lifetimeFloorsKey = (username: string) =>
+  `skyline:lt:floors:${username.toLowerCase()}`;
+const lifetimePerfectsKey = (username: string) =>
+  `skyline:lt:perfects:${username.toLowerCase()}`;
+// Hash of unlocked achievement ids (field = achievement id, value = "1").
+// Using a hash because Devvit's Redis doesn't expose the SET data type.
+const achievementsKey = (username: string) =>
+  `skyline:ach:${username.toLowerCase()}`;
 // Streak data is kept for 60 days of inactivity, then garbage-collected.
 const STREAK_TTL_SECONDS = 60 * 24 * 60 * 60;
+// Lifetime totals and achievements are permanent — no TTL is set on them.
 
 // Read the top contributors for a day, joining the builders sorted set with the
 // perfect-run hash so the leaderboard can flag perfect players.
@@ -75,6 +85,98 @@ async function readStreak(username: string): Promise<number> {
 
 async function readFloorOwners(date: string): Promise<Record<string, string>> {
   return (await redis.hGetAll(ownersKey(date))) ?? {};
+}
+
+// Achievement definitions. The thresholds match the copy in the client UI
+// so the server is the source of truth.
+export const ACHIEVEMENT_DEFS: {
+  id: 'first-stack' | 'ten-perfect' | 'week-streak' | 'fifty-floors';
+  emoji: string;
+  title: string;
+  blurb: string;
+}[] = [
+  {
+    id: 'first-stack',
+    emoji: '🧱',
+    title: 'First Stack',
+    blurb: 'Add your first floor to the skyline',
+  },
+  {
+    id: 'ten-perfect',
+    emoji: '🎯',
+    title: 'Sharpshooter',
+    blurb: 'Finish 10 flawless runs across your career',
+  },
+  {
+    id: 'week-streak',
+    emoji: '🔥',
+    title: 'On Fire',
+    blurb: 'Stack on 7 different days in a row',
+  },
+  {
+    id: 'fifty-floors',
+    emoji: '🏙️',
+    title: 'High-Rise',
+    blurb: 'Stack 50 floors across your career',
+  },
+];
+
+// Compute the current state of every achievement for a player. Cheap reads
+// of streak + lifetime counters + the achievement set itself.
+async function readAchievements(username: string): Promise<
+  {
+    id: (typeof ACHIEVEMENT_DEFS)[number]['id'];
+    emoji: string;
+    title: string;
+    blurb: string;
+    unlocked: boolean;
+    progress: number;
+    current: number;
+    goal: number;
+  }[]
+> {
+  const [streak, ltFloors, ltPerfects, achHash] = await Promise.all([
+    readStreak(username),
+    redis.get(lifetimeFloorsKey(username)),
+    redis.get(lifetimePerfectsKey(username)),
+    redis.hGetAll(achievementsKey(username)),
+  ]);
+  const set = new Set(Object.keys(achHash ?? {}));
+  const floors = ltFloors ? parseInt(ltFloors, 10) : 0;
+  const perfects = ltPerfects ? parseInt(ltPerfects, 10) : 0;
+  // Return both the raw current count and the target so the client can
+  // render a real "5/10" progress label and a proportional bar.
+  return ACHIEVEMENT_DEFS.map((def) => {
+    const unlockedNow = set.has(def.id);
+    let prog = 0;
+    let current = 0;
+    let target = 1;
+    if (def.id === 'first-stack') {
+      const done = unlockedNow || floors > 0;
+      current = done ? 1 : 0;
+      target = 1;
+      prog = done ? 1 : 0;
+    } else if (def.id === 'ten-perfect') {
+      current = perfects;
+      target = 10;
+      prog = Math.max(0, Math.min(1, current / target));
+    } else if (def.id === 'week-streak') {
+      current = streak;
+      target = 7;
+      prog = Math.max(0, Math.min(1, current / target));
+    } else if (def.id === 'fifty-floors') {
+      current = floors;
+      target = 50;
+      prog = Math.max(0, Math.min(1, current / target));
+    }
+    return {
+      ...def,
+      unlocked: unlockedNow || prog >= 1,
+      progress: prog,
+      current,
+      goal: target,
+    };
+  });
 }
 
 // Post the once-per-day "goal reached" comment on the post, as the app account.
@@ -122,18 +224,24 @@ api.get('/init', async (c) => {
       : 0;
     const goalUnlocked = await goalReachedOn(yesterdayUtc());
     const daily = buildDailySeed(date, communityFloors, goalUnlocked);
-    const pbRaw = await redis.get(personalKey(date, username));
+    // Fan out the remaining independent reads in parallel — they don't depend
+    // on each other.
+    const [pbRaw, streak, streakData, builders, leaderboard, floorOwners, achievements] =
+      await Promise.all([
+        redis.get(personalKey(date, username)),
+        readStreak(username),
+        redis.hGetAll(streakKey(username)),
+        redis.zCard(buildersKey(date)),
+        readLeaderboard(date, 10),
+        readFloorOwners(date),
+        readAchievements(username),
+      ]);
     const personalBest = pbRaw ? parseInt(pbRaw, 10) : 0;
-    const streak = await readStreak(username);
     // Streak is at risk if the player has an active streak and yesterday is
     // the most recent day they played — i.e. the streak expires at UTC midnight.
-    const streakData = await redis.hGetAll(streakKey(username));
     const lastDay = streakData?.last;
     const streakAtRisk =
       !!lastDay && lastDay === yesterdayUtc() && streak > 0;
-    const builders = await redis.zCard(buildersKey(date));
-    const leaderboard = await readLeaderboard(date, 10);
-    const floorOwners = await readFloorOwners(date);
 
     return c.json<InitResponse>({
       type: 'init',
@@ -147,6 +255,7 @@ api.get('/init', async (c) => {
       leaderboard,
       streakAtRisk,
       floorOwners,
+      achievements,
     });
   } catch (err) {
     console.error('init failed', err);
@@ -258,9 +367,61 @@ api.post('/submit', async (c) => {
       }
     }
 
-    const builders = await redis.zCard(buildersKey(date));
-    const leaderboard = await readLeaderboard(date, 10);
-    const floorOwners = await readFloorOwners(date);
+    // Week-streak unlock happens once the streak reaches 7. The streak itself
+    // is computed during the streak-update block above, so re-read it.
+    const newlyUnlocked: string[] = [];
+    if (streak >= 7) {
+      try {
+        const achHash = await redis.hGetAll(achievementsKey(username));
+        if (!achHash || !achHash['week-streak']) {
+          await redis.hSet(achievementsKey(username), { 'week-streak': '1' });
+          newlyUnlocked.push('week-streak');
+        }
+      } catch (e) {
+        console.error('week-streak check failed', e);
+      }
+    }
+
+    // Lifetime counters and achievement checks. These are best-effort and
+    // never fail the run — the player still gets their score saved.
+    if (floors > 0 || perfect) {
+      try {
+        // Fire the two increments and the existing lifetime reads in parallel
+        // so we don't wait for one before kicking off the other.
+        const [newFloors, newPerfects] = await Promise.all([
+          floors > 0
+            ? redis.incrBy(lifetimeFloorsKey(username), floors)
+            : redis.get(lifetimeFloorsKey(username)).then((v) => parseInt(v ?? '0', 10)),
+          perfect
+            ? redis.incrBy(lifetimePerfectsKey(username), 1)
+            : redis
+                .get(lifetimePerfectsKey(username))
+                .then((v) => parseInt(v ?? '0', 10)),
+        ]);
+        const achHash = await redis.hGetAll(achievementsKey(username));
+        const have = new Set(Object.keys(achHash ?? {}));
+        const toUnlock: Record<string, string> = {};
+        if (!have.has('first-stack') && newFloors > 0) toUnlock['first-stack'] = '1';
+        if (!have.has('ten-perfect') && newPerfects >= 10) toUnlock['ten-perfect'] = '1';
+        if (!have.has('fifty-floors') && newFloors >= 50) toUnlock['fifty-floors'] = '1';
+        if (Object.keys(toUnlock).length > 0) {
+          await redis.hSet(achievementsKey(username), toUnlock);
+          newlyUnlocked.push(...Object.keys(toUnlock));
+        }
+      } catch (e) {
+        console.error('lifetime update failed', e);
+      }
+    }
+
+    // Independent reads — fire in parallel. The week-streak hGetAll above
+    // already touched the achievements hash; the readAchievements call here
+    // will reflect the just-applied unlocks.
+    const [builders, leaderboard, floorOwners, achievements] = await Promise.all([
+      redis.zCard(buildersKey(date)),
+      readLeaderboard(date, 10),
+      readFloorOwners(date),
+      readAchievements(username),
+    ]);
 
     return c.json<SubmitResponse>({
       type: 'submit',
@@ -274,6 +435,8 @@ api.post('/submit', async (c) => {
       leaderboard,
       claimedFloors,
       floorOwners,
+      achievements,
+      newlyUnlocked,
     });
   } catch (err) {
     console.error('submit failed', err);

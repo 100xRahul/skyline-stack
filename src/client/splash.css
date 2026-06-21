@@ -262,6 +262,33 @@ body {
   opacity: 0.7;
 }
 
+/* Lifetime achievement summary line shown on the splash to telegraph the
+   long-term goal to first-time visitors. */
+.live-achievements {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px auto 0;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  width: max-content;
+  max-width: 100%;
+}
+.live-achievements .la-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #ffd166;
+}
+.live-achievements .la-value {
+  color: #fff;
+}
+
 .start-button {
   background: #ffd166;
   color: #1a1a2e;

@@ -74,7 +74,8 @@ body {
 #score-pill,
 #community-pill,
 #streak-pill,
-#subreddit-pill {
+#subreddit-pill,
+#next-claim-pill {
   background: var(--pill-bg);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -88,6 +89,19 @@ body {
   letter-spacing: 0.04em;
   box-shadow: var(--shadow);
   white-space: nowrap;
+}
+
+#next-claim-pill {
+  /* Soft gold tint so it reads as "the next target" without competing with the
+     community counter. */
+  background: rgba(255, 209, 102, 0.18);
+  border: 1px solid rgba(255, 209, 102, 0.35);
+  animation: next-claim-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes next-claim-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
 }
 
 #subreddit-pill {
@@ -461,6 +475,144 @@ body {
   font-size: 16px;
 }
 
+/* Lifetime achievements block. */
+.summary-block {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  text-align: left;
+}
+.summary-block-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.55);
+  margin-bottom: 8px;
+  text-align: center;
+}
+.ach-row {
+  display: grid;
+  grid-template-columns: 24px 1fr 80px 44px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 0;
+}
+.ach-emoji {
+  font-size: 18px;
+  text-align: center;
+}
+.ach-title {
+  color: rgba(255, 255, 255, 0.85);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ach-bar {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ach-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #ffd166, #ef476f);
+  transition: width 220ms ease;
+}
+.ach-prog {
+  text-align: right;
+  color: rgba(255, 255, 255, 0.65);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.ach-row.ach-unlocked {
+  color: #06d6a0;
+}
+.ach-row.ach-unlocked .ach-fill {
+  background: linear-gradient(90deg, #06d6a0, #4cc9f0);
+}
+.ach-row.ach-unlocked .ach-prog {
+  color: #06d6a0;
+  font-weight: 800;
+}
+
+/* Achievement toast that pops up when a new badge unlocks. */
+.achievement-toast-layer {
+  position: absolute;
+  top: 72px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 24;
+}
+.achievement-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(20, 16, 38, 0.94), rgba(50, 18, 78, 0.94));
+  border: 1px solid rgba(255, 209, 102, 0.5);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font-weight: 600;
+  font-size: 13px;
+  min-width: 220px;
+  max-width: 280px;
+  transform: translateX(140%);
+  animation: achievement-slide-in 320ms cubic-bezier(0.2, 0.9, 0.3, 1.2) forwards;
+}
+.achievement-toast.is-leaving {
+  animation: achievement-slide-out 320ms ease-in forwards;
+}
+@keyframes achievement-slide-in {
+  to { transform: translateX(0); }
+}
+@keyframes achievement-slide-out {
+  to {
+    transform: translateX(140%);
+    opacity: 0;
+  }
+}
+.at-emoji {
+  font-size: 28px;
+  flex-shrink: 0;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
+}
+.at-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.at-label {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #ffd166;
+}
+.at-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.at-blurb {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 #overlay-leaderboard {
   width: 100%;
   margin-top: 4px;
@@ -511,6 +663,17 @@ body {
   gap: 8px;
   font-size: 13px;
   padding: 3px 0;
+}
+
+.lb-row.lb-podium {
+  font-weight: 800;
+  padding: 4px 0;
+}
+
+.lb-row .lb-medal {
+  width: 22px;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
 }
 
 .lb-row .lb-rank {

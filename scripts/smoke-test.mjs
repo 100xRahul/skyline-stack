@@ -167,6 +167,8 @@ async function runChecks(label, contextOptions) {
     goal: document.getElementById('community-goal')?.textContent,
     streak: document.getElementById('streak-value')?.textContent,
     subreddit: document.getElementById('subreddit-name')?.textContent,
+    nextClaim: document.getElementById('next-claim-value')?.textContent,
+    nextClaimHidden: document.getElementById('next-claim-pill')?.hidden,
     canvas: !!document.querySelector('#game-container canvas'),
     canvasWidth: document.querySelector('#game-container canvas')?.width,
     canvasHeight: document.querySelector('#game-container canvas')?.height,

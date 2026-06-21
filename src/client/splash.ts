@@ -36,7 +36,7 @@ async function showLiveProgress() {
   } catch {
     return;
   }
-  const { communityFloors, daily, builders } = init;
+  const { communityFloors, daily, builders, achievements } = init;
   const goal = Math.max(1, daily.communityGoal);
   const pct = Math.min(100, (communityFloors / goal) * 100);
 
@@ -64,6 +64,16 @@ async function showLiveProgress() {
 
   if (dayNameEl) {
     dayNameEl.textContent = dailyChallengeName(daily.date);
+  }
+
+  // Surface lifetime achievement progress on the splash so first-time
+  // visitors see a long-term goal they can chase.
+  const achWrap = document.getElementById('live-achievements');
+  const achValue = document.getElementById('live-achievements-value');
+  if (achWrap && achValue && achievements && achievements.length > 0) {
+    const unlocked = achievements.filter((a) => a.unlocked).length;
+    achValue.textContent = `${unlocked} / ${achievements.length} unlocked`;
+    achWrap.hidden = false;
   }
 }
 

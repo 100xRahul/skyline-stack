@@ -1,6 +1,7 @@
 import { Scene } from 'phaser';
 import * as Phaser from 'phaser';
 import type {
+  AchievementState,
   DailySeed,
   InitResponse,
   LeaderboardEntry,
@@ -22,8 +23,6 @@ const FIRST_PLATFORM_Y_RATIO = 0.62;
 const GHOST_FLOOR_RATIO = 0.85;
 // Minimum combo before the HUD pill appears. 2 keeps the surface calm.
 const COMBO_HUD_THRESHOLD = 2;
-// Floor count above which the goal-banner deserves a full-screen celebration.
-const GOAL_BANNER_FLOORS_THRESHOLD = 1;
 
 // Best-effort haptic tap. Silently no-op on devices without vibration support.
 function vibrate(ms: number) {
@@ -100,6 +99,10 @@ export class GameScene extends Scene {
   private subredditName = '';
   private streakAtRisk = false;
   private goalCelebrated = false;
+  // Persistent achievement state from the server. We keep a copy so the
+  // achievement toast only fires for achievements the player just unlocked.
+  private achievements: AchievementState[] = [];
+  private lastSeenAchievements: Set<string> = new Set();
 
   private stacks: Stack[] = [];
   private currentBlock!: Phaser.GameObjects.Rectangle;
@@ -260,6 +263,66 @@ export class GameScene extends Scene {
     warn.hidden = !this.streakAtRisk;
   }
 
+  // Show the next unclaimed milestone floor in the HUD. We look at the
+  // current community total + 1 (the floor this run could help claim) and
+  // find the smallest multiple of 5 (or the day's goal) that is greater
+  // than that. Hidden when the goal is already reached.
+  private updateNextClaim() {
+    const pill = document.getElementById('next-claim-pill');
+    const val = document.getElementById('next-claim-value');
+    if (!pill || !val) return;
+    if (!this.daily) {
+      pill.hidden = true;
+      return;
+    }
+    const base = this.communityFloors;
+    const goal = this.daily.communityGoal;
+    let next = 5 * Math.floor(base / 5 + 1);
+    if (next <= base) next += 5;
+    // Always show the day's goal as the final claimable milestone.
+    if (next > goal) {
+      if (base >= goal) {
+        pill.hidden = true;
+        return;
+      }
+      next = goal;
+    }
+    val.textContent = String(next);
+    pill.hidden = false;
+  }
+
+  // Pop a big achievement toast for a newly-unlocked achievement. The toast
+  // auto-dismisses after ~3 seconds. Safe to call with no new unlocks.
+  private showAchievementToasts(ids: string[]) {
+    if (ids.length === 0) return;
+    const states = this.achievements;
+    ids.forEach((id, idx) => {
+      const def = states.find((s) => s.id === id);
+      if (!def) return;
+      window.setTimeout(() => this.popAchievementToast(def), idx * 1400);
+    });
+  }
+
+  private popAchievementToast(def: AchievementState) {
+    const layer = document.getElementById('achievement-toast-layer');
+    if (!layer) return;
+    const toast = document.createElement('div');
+    toast.className = 'achievement-toast';
+    toast.innerHTML = `
+      <div class="at-emoji">${def.emoji}</div>
+      <div class="at-body">
+        <div class="at-label">Achievement unlocked</div>
+        <div class="at-title">${this.escapeHtml(def.title)}</div>
+        <div class="at-blurb">${this.escapeHtml(def.blurb)}</div>
+      </div>`;
+    layer.appendChild(toast);
+    // Animate in (CSS handles the entrance) then auto-remove.
+    window.setTimeout(() => {
+      toast.classList.add('is-leaving');
+      window.setTimeout(() => toast.remove(), 380);
+    }, 2600);
+  }
+
   private setupMuteButton() {
     const btn = document.getElementById('mute-button');
     if (!btn) return;
@@ -298,6 +361,7 @@ export class GameScene extends Scene {
     this.leaderboard = init.leaderboard;
     this.username = init.username;
     this.floorOwners = init.floorOwners ?? {};
+    this.achievements = init.achievements ?? [];
     // Server can hint when a streak is "at risk" — set by /api/init so the
     // overlay and HUD can nudge the player back.
     this.streakAtRisk = init.streakAtRisk ?? false;
@@ -307,6 +371,7 @@ export class GameScene extends Scene {
     this.startWindowFlicker();
     this.updateHud();
     this.updateStreakWarning();
+    this.updateNextClaim();
     const remaining = Math.max(0, this.daily.communityGoal - this.communityFloors);
     const base =
       remaining > 0
@@ -962,6 +1027,7 @@ export class GameScene extends Scene {
     this.leaderboard = data.leaderboard;
     this.floorOwners = data.floorOwners ?? this.floorOwners;
     this.claimedFloors = data.claimedFloors ?? [];
+    this.achievements = data.achievements ?? this.achievements;
     this.updateHud();
     if (data.goalReached && !this.goalCelebrated) {
       this.goalCelebrated = true;
@@ -970,6 +1036,8 @@ export class GameScene extends Scene {
       this.showGoalBanner();
       this.celebrationBurst();
     }
+    // Surface any newly unlocked achievements via a celebratory toast stack.
+    this.showAchievementToasts(data.newlyUnlocked ?? []);
     // On a run worth showing off, pull the camera back for a "money shot" of the
     // whole tower against the skyline before the summary overlay slides in.
     const placed = this.stacks.filter((s) => !s.isGhost).length - 1;
@@ -1069,6 +1137,24 @@ export class GameScene extends Scene {
     );
     if (perfect) summaryLines.push(`<div class="summary-row" style="color:#ffd166"><span class="label">Perfect run</span><span class="value">all clean</span></div>`);
     if (goal) summaryLines.push(`<div class="summary-row" style="color:#06d6a0"><span class="label">Sub goal</span><span class="value">REACHED 🎉</span></div>`);
+    // Surface the player's lifetime achievements progress in the summary
+    // card so it doubles as a long-term "what's next" checklist.
+    if (this.achievements.length > 0) {
+      const achHtml = this.achievements
+        .map((a) => {
+          const pct = Math.min(100, Math.round((a.progress / Math.max(1, a.goal)) * 100));
+          const prog = a.unlocked ? '✓' : `${a.current}/${a.goal}`;
+          return `
+            <div class="ach-row ${a.unlocked ? 'ach-unlocked' : ''}">
+              <span class="ach-emoji">${a.emoji}</span>
+              <span class="ach-title">${this.escapeHtml(a.title)}</span>
+              <span class="ach-bar"><span class="ach-fill" style="width:${pct}%"></span></span>
+              <span class="ach-prog">${prog}</span>
+            </div>`;
+        })
+        .join('');
+      summaryLines.push(`<div class="summary-block"><div class="summary-block-title">Lifetime achievements</div>${achHtml}</div>`);
+    }
     if (this.claimedFloors.length > 0) {
       const list = this.claimedFloors.join(', ');
       summaryLines.push(
@@ -1131,6 +1217,8 @@ export class GameScene extends Scene {
   // Build the "Today's builders" leaderboard markup from the latest server data.
   private leaderboardHtml(): string {
     if (!this.leaderboard.length) return '';
+    const medals = ['🥇', '🥈', '🥉'];
+    const medalColors = ['#ffd166', '#dfe6e9', '#cd7f32'];
     const rows = this.leaderboard
       .map((e, i) => {
         const you =
@@ -1139,7 +1227,9 @@ export class GameScene extends Scene {
             : '';
         const perfect = e.perfect ? ' <span class="lb-perfect">★</span>' : '';
         const name = this.escapeHtml(e.username);
-        return `<div class="lb-row"><span class="lb-rank">${i + 1}</span><span class="lb-name${you}">${name}${perfect}</span><span class="lb-floors">${e.floors}</span></div>`;
+        const medal = i < 3 ? `<span class="lb-medal" style="color:${medalColors[i] ?? '#fff'}">${medals[i]}</span>` : `<span class="lb-rank">${i + 1}</span>`;
+        const podium = i < 3 ? ' lb-podium' : '';
+        return `<div class="lb-row${podium}">${medal}<span class="lb-name${you}">${name}${perfect}</span><span class="lb-floors">${e.floors}</span></div>`;
       })
       .join('');
     return `<div id="overlay-leaderboard"><div class="lb-title">Today's builders</div>${rows}</div>`;
@@ -1191,6 +1281,7 @@ export class GameScene extends Scene {
       const pct = Math.min(100, (this.communityFloors / Math.max(1, this.daily.communityGoal)) * 100);
       fillEl.style.width = `${pct}%`;
     }
+    this.updateNextClaim();
   }
 
   private showOverlay(opts: {

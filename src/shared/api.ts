@@ -50,6 +50,26 @@ export type InitResponse = {
   // Rendered as named tags on the ghost tower so contributions are visible
   // and "owned". Only milestone floors (every 5th + the goal floor) are kept.
   floorOwners: Record<string, string>;
+  // Persistent achievements. Each is a 1-line definition the client renders
+  // and a boolean `unlocked`. Progress is for the "almost there" case.
+  achievements: AchievementState[];
+};
+
+export type AchievementDef = {
+  id: 'first-stack' | 'ten-perfect' | 'week-streak' | 'fifty-floors';
+  emoji: string;
+  title: string;
+  blurb: string;
+};
+
+export type AchievementState = AchievementDef & {
+  unlocked: boolean;
+  // Best-effort progress (0-1). For boolean achievements this stays at 0/1.
+  progress: number;
+  // Raw current count for display ("3/10 perfects").
+  current: number;
+  // The target value the player is racing to.
+  goal: number;
 };
 
 export type SubmitResponse = {
@@ -75,6 +95,10 @@ export type SubmitResponse = {
   claimedFloors: number[];
   // Updated owners of milestone floors after this run: floor number -> username.
   floorOwners: Record<string, string>;
+  // Current state of every achievement (unlocked + progress) for the player.
+  achievements: AchievementState[];
+  // Achievement ids unlocked by THIS run. Empty when none.
+  newlyUnlocked: string[];
 };
 
 export type LeaderboardEntry = {

@@ -69,3 +69,44 @@ Tradeoff:
 Follow-up:
   None.
 ```
+
+```text
+2026-06-22 - Lifetime achievements as the long-term retention loop
+Context:
+  Daily streaks are powerful but a player who misses two days in a row loses
+  the streak. We needed a second retention loop that compounds even when the
+  player is offline: lifetime floors, lifetime perfects, and longest streak.
+  These let a returning player see real progress, unlock permanent badges, and
+  always have "what's next" visible in the summary card.
+Decision:
+  Add four lifetime achievements (first-stack, ten-perfect, week-streak,
+  fifty-floors) tracked on the server with Redis hashes. Server returns
+  current/goal/progress/unlocked on every /api/init and /api/submit response.
+  The summary card shows all four with progress bars, and newly-unlocked
+  achievements pop a celebratory toast in the corner. The splash also shows a
+  "Lifetime: N/4 unlocked" chip so first-time visitors see the long-term goal.
+Tradeoff:
+  Server response grew slightly (achievements array on every call). The hash
+  write happens once per submit, so it's not a hot path. The HUD didn't get
+  crowded because achievements live in the post-run summary, not the HUD.
+Follow-up:
+  Consider expanding to 6-8 achievements (streak tiers, builder-of-the-day,
+  perfect-run streaks) if launch data shows we need a longer "what's next".
+```
+
+```text
+2026-06-22 - "Next claim" pill in the HUD
+Context:
+  The milestone floor ownership system (5, 10, 15, ..., goal) awards the
+  first-to-cross floor to the player, but the player had no way to see which
+  milestone they were racing toward in the moment.
+Decision:
+  Add a "next-claim" pill in the HUD that shows the next unclaimed milestone
+  (next multiple of 5 above community floors, or the daily goal if closer).
+  Pulses gently to draw the eye. Hidden once the goal is reached.
+Tradeoff:
+  One more HUD chip, but it's tucked between the score and community pills and
+  reuses the same visual language (pill, soft gold tint).
+Follow-up:
+  None.
+```
