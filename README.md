@@ -16,8 +16,9 @@ A run takes 20–60 seconds. Perfect stacks (zero overhang) trigger a gold burst
 
 ## Why it has a hook
 
-- **One-sentence hook**: drop blocks to build today's skyline — every player in the sub adds a floor, and together you reach the goal.
-- **Daily reset**: the seed (palette, swing speed, goal, starting block width) is locked for the UTC day, so everyone in the sub gets the same challenge.
+- **One-sentence hook**: every player in the sub builds one shared tower, hand to hand — you continue from exactly where the last builder left it, and together you reach the goal.
+- **One shared physical tower**: the sub narrows a single tower across the day. Your run's starting block width is the width the sub's tower currently sits at — so an early builder hands a wide tower to the next player, and a late builder inherits a thin one the whole sub has been whittling down. Your contribution literally changes the next player's session, not just a counter. The narrowing is computed server-side from floors added (never trusted from the client), clamped to a playable minimum, and reset daily.
+- **Daily reset**: the seed (palette, swing speed, goal) is locked for the UTC day, so everyone in the sub gets the same challenge.
 - **Visible community progress**: the inline post card *and* the in-game HUD show a live bar toward today's floor goal, plus how many builders have contributed. You are not just chasing a personal best — you are helping the sub's skyline.
 - **Today's builders board**: the end-of-run overlay (and the start overlay) shows the day's top contributors, with you highlighted and perfect runs starred.
 - **Constrained contribution**: every run contributes `(username, floors, perfect)` to Redis. No free-form text, no abusive inputs.

@@ -38,6 +38,7 @@ stubbed via `page.addInitScript` so the bundle's `requestExpandedMode` and
 - (Round 6) No rate limiting — added per-user per-minute buckets for init (30/min), submit (20/min), share (6/min) with 70s TTL.
 - (Round 7) Daily palette could repeat on consecutive days. Server now stores today's base palette in the daily meta hash and passes yesterday's id into `buildDailySeed` so the anti-repeat promise is actually enforced.
 - (Round 8) Mobile HUD pills overlapped at 390px. Added media queries: pill labels hide at <480px, next-claim pill hides at <360px.
+- (Round 9) Collaboration was purely additive — every player started a fresh wide block and just incremented a shared counter, so the "shared tower" was cosmetic and the game read as a Stack reskin. Made the sub build one physical tower: the shared top-floor width (`skyline:<date>:topwidth`) narrows with every run (server-authoritative via `narrowTower()`, clamped to a playable minimum, capped per run, reset daily), and each player's first block inherits it — so your run changes the next builder's difficulty. Surfaced in the start/retry overlays ("You're continuing the sub's tower — it's narrowing") and the run summary ("Tower left for sub"). Smoke test re-run clean (0 console/page errors, both viewports); screenshots regenerated. This also revived dead code: `daily.blockWidth` was shipped but never read by the client.
 
 ## Screenshots
 

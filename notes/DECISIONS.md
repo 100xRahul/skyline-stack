@@ -39,21 +39,53 @@ Follow-up:
 ```
 
 ```text
-2026-06-21 - Bootstrap seed flows from server, with client-side fallback
+2026-06-21 - Bootstrap seed flows from server; no fabricated fallback
 Context:
   The /api/init call returns the daily seed, community floors, personal best,
-  and streak. If the call fails (offline, Devvit webview not ready, smoke test),
-  the game should still play.
+  and streak. An early build fell back to a client-only buildDailySeed() when
+  the call failed, but that fabricated community/streak state the player could
+  mistake for real, shared data.
 Decision:
-  The Game scene bootstrap() awaits /api/init. On any failure, it falls back to
-  buildDailySeed(todayUtc(), 0). The /api/submit endpoint also has a client-side
-  fallback that shows the local-only summary so the end-of-run overlay still
-  shows.
+  The Game scene bootstrap() awaits /api/init and /api/submit. On any failure it
+  shows an explicit error overlay with a retry button (showError) and never
+  fabricates state — Game.ts:bootstrap() and submitRun() both bail to the retry
+  overlay. The game is server-authoritative; a degraded path that invents a
+  shared tower would be worse than an honest "try again".
 Tradeoff:
-  Slight risk of stale "personal best" on offline submissions, but it keeps the
-  game playable in degraded conditions.
+  No offline play. Acceptable: the whole point is the shared sub tower, which
+  only exists on the server.
 Follow-up:
   None.
+```
+
+```text
+2026-06-24 - Shared physical tower: the sub narrows one tower hand to hand
+Context:
+  The core loop was single-player "Stack" with the community contribution being
+  an additive counter — every player started a fresh wide block and their floors
+  just incremented a shared total. The collaboration was a sum, not an
+  interaction: nothing one player did changed another player's session. That is
+  the weakest form of "user contribution" and reads as a Stack reskin.
+Decision:
+  Make the sub build ONE physical tower per day. Its top-floor width lives in
+  skyline:<date>:topwidth and starts at TOWER_START_WIDTH. Every run narrows it
+  (narrowTower() in shared/seed.ts) — more for a sloppy run, less for a perfect
+  one — down to a clamped TOWER_MIN_WIDTH. The player's first block inherits the
+  current width, so each builder continues the tower from where the last left
+  it. Surfaced in the start/retry overlays ("You're continuing the sub's tower —
+  it's narrowing") and the end-of-run summary ("Tower left for sub").
+  Note: this revived dead state — daily.blockWidth was computed server-side and
+  shipped but never used by the client (the first block was hardcoded to
+  PLAY_WIDTH).
+Tradeoff:
+  Narrowing must be server-authoritative to be grief-safe. It is computed from
+  floors added (the client never asserts a width), clamped to a playable
+  minimum, capped per run (TOWER_MAX_NARROW_PER_RUN) so no single run/script can
+  slam the tower to the minimum, and reset with the daily key. One extra Redis
+  read + conditional write per submit; one extra read batched into /api/init.
+Follow-up:
+  Consider a visible tower-width meter in the HUD, and letting a long perfect
+  run widen the tower back a touch as a "repair the sub's tower" reward.
 ```
 
 ```text
