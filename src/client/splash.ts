@@ -1,8 +1,10 @@
 import { requestExpandedMode } from '@devvit/web/client';
+import { dailyChallengeName } from '../shared/seed';
 import type { InitResponse } from '../shared/api';
 
 const startButton = document.getElementById('start-button') as HTMLButtonElement;
 const subredditTag = document.getElementById('subreddit-tag') as HTMLSpanElement;
+const dayNameEl = document.getElementById('day-name');
 
 startButton.addEventListener('click', (e) => {
   requestExpandedMode(e, 'game');
@@ -59,6 +61,10 @@ async function showLiveProgress() {
     communityFloors >= daily.communityGoal
       ? 'Push it higher'
       : "Add to today's stack";
+
+  if (dayNameEl) {
+    dayNameEl.textContent = dailyChallengeName(daily.date);
+  }
 }
 
 void setSubLabel();

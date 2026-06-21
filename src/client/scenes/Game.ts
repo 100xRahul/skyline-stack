@@ -6,7 +6,7 @@ import type {
   LeaderboardEntry,
   SubmitResponse,
 } from '../../shared/api';
-import { PALETTES } from '../../shared/seed';
+import { PALETTES, dailyChallengeName } from '../../shared/seed';
 import { audio } from '../audio';
 
 // Width of the play column relative to the game world. The camera stays focused
@@ -35,6 +35,29 @@ function shadowColorForPalette(daily: DailySeed): number {
   return Phaser.Display.Color.HexStringToColor(PALETTES[daily.paletteId].shadow).color;
 }
 
+// Per-floor color jitter so the stack reads as a varied city skyline rather
+// than a single color bar. The tint is deterministic from the floor index so
+// it stays stable across re-renders, and the magnitude is small enough that
+// it never breaks the palette identity.
+function tintedBlockColor(baseColor: number, depth: number): number {
+  // 6% max HSL lightness shift, oscillating with the floor number.
+  const tint = (Math.sin(depth * 0.55) + Math.cos(depth * 0.31)) * 0.03;
+  const base = Phaser.Display.Color.IntegerToColor(baseColor) as unknown as {
+    h: number;
+    s: number;
+    l: number;
+  };
+  const h = base.h;
+  const s = Phaser.Math.Clamp(base.s, 0, 1);
+  const l = Phaser.Math.Clamp(base.l + tint, 0.2, 0.95);
+  const c = Phaser.Display.Color.HSLToColor(h, s, l) as unknown as {
+    r: number;
+    g: number;
+    b: number;
+  };
+  return Phaser.Display.Color.GetColor(c.r, c.g, c.b);
+}
+
 type Stack = {
   x: number;
   y: number;
@@ -52,6 +75,9 @@ export class GameScene extends Scene {
   private platformGraphics!: Phaser.GameObjects.Graphics;
   private particleLayer!: Phaser.GameObjects.Graphics;
   private windowLayer!: Phaser.GameObjects.Graphics;
+  private pbGhostGraphics: Phaser.GameObjects.Graphics | null = null;
+  private pbGhostLabel: Phaser.GameObjects.Text | null = null;
+  private pbGhost: number | null = null;
 
   private daily!: DailySeed;
   private communityFloors = 0;
@@ -111,6 +137,7 @@ export class GameScene extends Scene {
     this.setupMuteButton();
     this.setupSubredditPill();
     this.setupComboBanner();
+    this.setupVisibilityPause();
 
     // Wait for /api/init before showing the start overlay so HUD reflects real state.
     void this.bootstrap();
@@ -140,6 +167,20 @@ export class GameScene extends Scene {
     // it starts hidden. (It's hidden by default in HTML.)
     const banner = document.getElementById('combo-banner');
     if (banner) banner.classList.remove('is-visible');
+  }
+
+  private setupVisibilityPause() {
+    // Pause the swinging block when the player switches tabs or backgrounds
+    // the app. Resumes on return so the run isn't wasted by an out-of-focus
+    // miss. We use the document visibility API which works on desktop and mobile.
+    document.addEventListener('visibilitychange', () => {
+      if (!this.isRunning) return;
+      if (document.hidden) {
+        this.currentTween?.pause();
+      } else {
+        this.currentTween?.resume();
+      }
+    });
   }
 
   private showCombo() {
@@ -248,14 +289,51 @@ export class GameScene extends Scene {
       remaining > 0
         ? `${remaining} floors left to reach today's goal. Stack as high as you can.`
         : "Today's goal is reached — keep stacking to push it higher.";
+    const dayName = dailyChallengeName(this.daily.date);
     this.showOverlay({
-      title: this.daily.goalUnlocked ? 'Aurora unlocked ✨' : "Today's Skyline",
+      title: this.daily.goalUnlocked
+        ? `Aurora ${dayName} ✨`
+        : dayName,
       sub: this.daily.goalUnlocked
         ? `The sub hit yesterday's goal, so today's skyline glows. ${base}`
         : base,
-      button: 'START',
+      button: this.isFirstPlay() ? 'SHOW ME' : 'START',
       leaderboardHtml: this.leaderboardHtml(),
+      rivalHtml: this.rivalHtml(),
     });
+    if (this.isFirstPlay()) {
+      // Flag is set when the player actually starts so the tutorial only
+      // shows on the first ever interaction, not on every cold load.
+      this.showTutorialBanner();
+    }
+  }
+
+  // localStorage flag — silent on failures (private mode, quota, etc.).
+  private isFirstPlay(): boolean {
+    try {
+      return localStorage.getItem('skyline:tutorial-done') !== '1';
+    } catch {
+      return false;
+    }
+  }
+
+  private markTutorialDone() {
+    try {
+      localStorage.setItem('skyline:tutorial-done', '1');
+    } catch {
+      // ignore
+    }
+  }
+
+  private showTutorialBanner() {
+    const banner = document.getElementById('tutorial-banner');
+    if (!banner) return;
+    banner.hidden = false;
+  }
+
+  private hideTutorialBanner() {
+    const banner = document.getElementById('tutorial-banner');
+    if (banner) banner.hidden = true;
   }
 
   private paintBackground() {
@@ -292,6 +370,9 @@ export class GameScene extends Scene {
     // The community floors below the player's stack render as a soft
     // repeating "ghost" so today's contribution has a visible starting line.
     this.platformGraphics.clear();
+    this.windowLayer.clear();
+    this.pbGhostGraphics?.clear();
+    this.pbGhost = null;
     const ghostCount = Math.min(
       this.daily.communityFloors,
       Math.floor(this.scale.height * GHOST_FLOOR_RATIO / PLATFORM_HEIGHT)
@@ -321,6 +402,57 @@ export class GameScene extends Scene {
       isGhost: false,
     });
     this.drawStacks();
+    // Render the PB ghost line if the player has set a personal best today.
+    this.drawPbGhost();
+  }
+
+  // Personal-best ghost marker. If the player already has a daily PB, draw
+  // a gold horizontal line at that height so they have a visible target
+  // to beat during their run. The line extends across the play column.
+  private drawPbGhost() {
+    if (this.personalBest <= 0) return;
+    const g = this.ensurePbGhostLayer();
+    g.clear();
+    const baseY = this.scale.height * FIRST_PLATFORM_Y_RATIO;
+    const ghostCount = Math.min(
+      this.daily.communityFloors,
+      Math.floor(this.scale.height * GHOST_FLOOR_RATIO / PLATFORM_HEIGHT)
+    );
+    const stackBaseY = baseY + ghostCount * PLATFORM_HEIGHT;
+    // PB sits this many floors above the base.
+    const y = stackBaseY - (this.personalBest + 1) * PLATFORM_HEIGHT;
+    if (y < 0) return;
+    this.pbGhost = y;
+    const gold = Phaser.Display.Color.HexStringToColor('#ffd166').color;
+    const width = PLAY_WIDTH + 12;
+    g.lineStyle(2, gold, 0.9);
+    g.strokeRoundedRect(
+      this.scale.width / 2 - width / 2,
+      y - 1,
+      width,
+      2,
+      1
+    );
+    // Tiny flag label centered on the line.
+    const label = this.add
+      .text(this.scale.width / 2, y - 12, `PB ${this.personalBest}`, {
+        fontFamily: 'Arial Black',
+        fontSize: '11px',
+        color: '#ffd166',
+        backgroundColor: 'rgba(8, 10, 26, 0.78)',
+        padding: { x: 6, y: 2 } as Phaser.Types.GameObjects.Text.TextPadding,
+      })
+      .setOrigin(0.5, 0.5)
+      .setDepth(8);
+    this.pbGhostLabel = label;
+  }
+
+  private ensurePbGhostLayer(): Phaser.GameObjects.Graphics {
+    if (!this.pbGhostGraphics) {
+      this.pbGhostGraphics = this.add.graphics();
+      this.pbGhostGraphics.setDepth(7);
+    }
+    return this.pbGhostGraphics;
   }
 
   private drawStacks() {
@@ -413,6 +545,8 @@ export class GameScene extends Scene {
     this.goalCelebrated = false;
     audio.resume();
     this.hideOverlay();
+    this.hideTutorialBanner();
+    this.markTutorialDone();
     this.showTapHint();
     // Spawn the very first moving block (its base is the top of the starting stack).
     const top = this.stacks[this.stacks.length - 1]!;
@@ -430,6 +564,10 @@ export class GameScene extends Scene {
     this.stacks = [];
     this.particleLayer.clear();
     this.windowLayer.clear();
+    this.pbGhostGraphics?.clear();
+    this.pbGhostLabel?.destroy();
+    this.pbGhostLabel = null;
+    this.pbGhost = null;
     this.hideTapHint();
     this.hideCombo();
     if (this.currentTween) {
@@ -446,6 +584,7 @@ export class GameScene extends Scene {
       sub: 'Stack blocks to add to today’s sub skyline.',
       button: 'STACK',
       leaderboardHtml: this.leaderboardHtml(),
+      rivalHtml: this.rivalHtml(),
     });
   }
 
@@ -563,7 +702,7 @@ export class GameScene extends Scene {
       y: newY,
       width: newWidth,
       depth: this.currentDepth + 1,
-      color: blockColor,
+      color: tintedBlockColor(blockColor, this.currentDepth + 1),
       isGhost: false,
     });
 
@@ -752,6 +891,18 @@ export class GameScene extends Scene {
     if (perfect) summaryLines.push(`<div class="summary-row" style="color:#ffd166"><span class="label">Perfect run</span><span class="value">all clean</span></div>`);
     if (goal) summaryLines.push(`<div class="summary-row" style="color:#06d6a0"><span class="label">Sub goal</span><span class="value">REACHED 🎉</span></div>`);
 
+    // Share templates — three short, pre-written comments the player can post
+    // on the post. The form endpoint is fixed-template (no free text), so
+    // moderation/abuse is bounded by the templates themselves.
+    const shareHtml = `<div id="overlay-share">
+      <div class="share-title">Share to this post</div>
+      <div class="share-buttons">
+        <button class="share-btn" data-share="1" type="button">Just my score</button>
+        <button class="share-btn" data-share="2" type="button">Brag</button>
+        <button class="share-btn" data-share="3" type="button">Rally the sub</button>
+      </div>
+    </div>`;
+
     const overlayTitle = beat
       ? placedFloors === 0
         ? 'Tough break'
@@ -765,9 +916,31 @@ export class GameScene extends Scene {
         ? 'You helped the sub reach today’s goal. Come back tomorrow.'
         : 'Keep adding to the sub’s skyline.',
       button: 'STACK AGAIN',
-      summaryHtml: summaryLines.join(''),
+      summaryHtml: summaryLines.join('') + shareHtml,
       leaderboardHtml: this.leaderboardHtml(),
+      rivalHtml: this.rivalHtml(),
     });
+    // Wire the share buttons to a server-side form. The Devvit form handler
+    // we registered is fixed-template, so this is a single click → toast.
+    document
+      .querySelectorAll<HTMLButtonElement>('#overlay-share .share-btn')
+      .forEach((btn) => {
+        btn.onclick = async (e) => {
+          e.stopPropagation();
+          const choice = btn.getAttribute('data-share') ?? '1';
+          try {
+            await fetch('/internal/form/share-result', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ message: choice }),
+            });
+            btn.textContent = '✓ Queued';
+            btn.disabled = true;
+          } catch {
+            btn.textContent = 'Try again';
+          }
+        };
+      });
   }
 
   // Build the "Today's builders" leaderboard markup from the latest server data.
@@ -785,6 +958,19 @@ export class GameScene extends Scene {
       })
       .join('');
     return `<div id="overlay-leaderboard"><div class="lb-title">Today's builders</div>${rows}</div>`;
+  }
+
+  // Rival indicator: a single-line callout above the leaderboard that points
+  // at whoever is currently topping the day's tower (other than the player).
+  // Drives explicit competition and a clear next move for the player.
+  private rivalHtml(): string {
+    const youLc = this.username.toLowerCase();
+    const rival = this.leaderboard.find(
+      (e) => e.username.toLowerCase() !== youLc
+    );
+    if (!rival) return '';
+    const name = this.escapeHtml(rival.username);
+    return `<div id="overlay-rival"><span class="rival-arrow">▲</span> Beat <span class="rival-name">u/${name}</span> (${rival.floors} floors)</div>`;
   }
 
   private escapeHtml(s: string): string {
@@ -828,6 +1014,7 @@ export class GameScene extends Scene {
     button: string;
     summaryHtml?: string;
     leaderboardHtml?: string;
+    rivalHtml?: string;
     onButton?: () => void;
   }) {
     const overlay = document.getElementById('overlay');
@@ -850,6 +1037,15 @@ export class GameScene extends Scene {
           this.startRun();
         }
       });
+    // Make the entire card tappable on touch devices so players don't have
+    // to aim for the button. Mouse clicks still go through (the button is
+    // the most visible target), but touch is forgiving.
+    card.onclick = (e) => {
+      if (e.target === btn) return; // button handles its own click
+      btn.click();
+    };
+    // Rival indicator sits between the description and the leaderboard.
+    this.setOverlaySection('overlay-rival', opts.rivalHtml, btn, card);
     this.setOverlaySection('overlay-summary', opts.summaryHtml, btn, card);
     this.setOverlaySection('overlay-leaderboard-wrap', opts.leaderboardHtml, btn, card);
     overlay.classList.remove('overlay-hidden');

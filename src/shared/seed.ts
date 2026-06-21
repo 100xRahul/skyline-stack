@@ -73,6 +73,48 @@ export function buildDailySeed(
   };
 }
 
+// A short, memorable challenge name per UTC day. Each date deterministically
+// gets a 2-word name like "Stardrop Monday" so the day has personality and is
+// easier to refer to in conversation ("did you finish Stardrop?").
+
+const ADJECTIVES = [
+  'Stardrop',
+  'Brickstorm',
+  'Sunvault',
+  'Cloudburst',
+  'Hexline',
+  'Emberglow',
+  'Quietude',
+  'Pebbleshade',
+  'Skylark',
+  'Brassbeam',
+  'Marblefall',
+  'Polaris',
+];
+
+const NOUNS = [
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+  'Sunday',
+  'Hour',
+  'Rush',
+  'Crane',
+  'Lull',
+  'Drip',
+  'Shift',
+];
+
+export function dailyChallengeName(date: string): string {
+  const rng = mulberry32(hashString('challenge-name:' + date));
+  const adj = ADJECTIVES[Math.floor(rng() * ADJECTIVES.length)]!;
+  const noun = NOUNS[Math.floor(rng() * NOUNS.length)]!;
+  return `${adj} ${noun}`;
+}
+
 // Palette definitions. Each palette has a sky, mid, and block color.
 // Background gradients are built from these in the Phaser scene.
 // Index 3 (aurora) is the bonus palette unlocked by hitting the daily goal.

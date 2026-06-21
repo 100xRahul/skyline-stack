@@ -31,6 +31,9 @@
   "triggers": {
     "onAppInstall": "/internal/triggers/on-app-install"
   },
+  "forms": {
+    "shareResult": "/internal/form/share-result"
+  },
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch"
