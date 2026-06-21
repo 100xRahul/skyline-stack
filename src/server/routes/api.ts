@@ -10,8 +10,10 @@ import type {
 } from '../../shared/api';
 import {
   DAILY_TTL_SECONDS,
+  TOWER_START_WIDTH,
   buildDailySeed,
   dailyChallengeName,
+  narrowTower,
   todayUtc,
   yesterdayUtc,
 } from '../../shared/seed';
@@ -23,6 +25,10 @@ const api = new Hono();
 // - The daily seed resets at UTC midnight.
 // - Per-user personal best is per (user, day) so daily leaderboards are honest.
 const floorsKey = (date: string) => `skyline:${date}:floors`;
+// Current width of the shared tower's top floor for the day. The sub narrows
+// this single value across the day; every builder inherits it and narrows it a
+// little more. Absent until the first run, where it defaults to the start width.
+const widthKey = (date: string) => `skyline:${date}:topwidth`;
 // Today's builders, stored as a sorted set keyed by username with the player's
 // best floor count for the day as the score. zAdd dedupes by member, so each
 // player appears once and their score tracks their personal best for the day.
@@ -109,6 +115,14 @@ async function readLeaderboard(
 async function readStreak(username: string): Promise<number> {
   const data = await redis.hGetAll(streakKey(username));
   return data?.count ? parseInt(data.count, 10) : 0;
+}
+
+// Read the shared tower's current top-floor width. Defaults to the start width
+// before anyone has played today.
+async function readTowerWidth(date: string): Promise<number> {
+  const raw = await redis.get(widthKey(date));
+  const w = raw ? parseInt(raw, 10) : TOWER_START_WIDTH;
+  return Number.isFinite(w) ? w : TOWER_START_WIDTH;
 }
 
 async function readFloorOwners(date: string): Promise<Record<string, string>> {
@@ -305,6 +319,7 @@ api.get('/init', async (c) => {
       floorNames,
       achievements,
       previousBaseRaw,
+      towerWidth,
     ] = await Promise.all([
       redis.get(personalKey(date, username)),
       readStreak(username),
@@ -315,6 +330,7 @@ api.get('/init', async (c) => {
       readFloorNames(date),
       readAchievements(username),
       redis.hGet(metaKey(yesterdayUtc()), 'basePalette'),
+      readTowerWidth(date),
     ]);
     const previousBase =
       previousBaseRaw === '0' || previousBaseRaw === '1' || previousBaseRaw === '2'
@@ -342,6 +358,7 @@ api.get('/init', async (c) => {
       subredditName: context.subredditName ?? '',
       daily,
       communityFloors,
+      towerWidth,
       personalBest,
       streak,
       builders,
@@ -410,6 +427,17 @@ api.post('/submit', async (c) => {
     if (perfect) {
       await redis.hSet(perfectKey(date), { [username.toLowerCase()]: '1' });
       await redis.expire(perfectKey(date), DAILY_TTL_SECONDS);
+    }
+
+    // Narrow the shared tower. The new width is computed entirely server-side
+    // from floors added (never trusted from the client), clamped to the
+    // minimum, and only ever decreases — so the next builder inherits the sub's
+    // thinner tower. A sloppy run narrows more than a perfect one.
+    const currentWidth = await readTowerWidth(date);
+    const towerWidth = narrowTower(currentWidth, floors, perfect);
+    if (towerWidth < currentWidth) {
+      await redis.set(widthKey(date), String(towerWidth));
+      await redis.expire(widthKey(date), DAILY_TTL_SECONDS);
     }
 
     // Streak: bump only once per UTC day. Consecutive days increment; a skipped
@@ -561,6 +589,7 @@ api.post('/submit', async (c) => {
       type: 'submit',
       communityFloors: after,
       floorsAdded: floors,
+      towerWidth,
       goalReached,
       personalBest: newPb,
       improvedPb,

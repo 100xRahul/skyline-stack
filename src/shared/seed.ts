@@ -39,6 +39,41 @@ export function yesterdayUtc(now: Date = new Date()): string {
 // data, but nothing lingers forever in Redis.
 export const DAILY_TTL_SECONDS = 36 * 60 * 60;
 
+// Shared-tower width. The sub builds ONE physical tower per UTC day: the first
+// builder of the day starts at TOWER_START_WIDTH and every run narrows the
+// shared tower a little, so later builders inherit a thinner tower the whole
+// sub has been whittling down. This is the "hand to hand" community mechanic —
+// your run literally changes the starting width of the next player's run.
+//
+// Narrowing is computed server-side from floors added (never trusted from the
+// client), clamped to TOWER_MIN_WIDTH so the tower always stays playable, and
+// reset with the daily key at UTC midnight. Perfect runs narrow less, so clean
+// play "holds the line" for the rest of the sub.
+export const TOWER_START_WIDTH = 300;
+export const TOWER_MIN_WIDTH = 150;
+// Pixels the shared tower narrows per floor added: sloppy vs. perfect runs.
+export const TOWER_NARROW_PER_FLOOR = 5;
+export const TOWER_NARROW_PER_FLOOR_PERFECT = 2;
+// Hard cap on how much a single run can narrow the shared tower, so no one run
+// (or script) can slam the whole sub down to the minimum in one go.
+export const TOWER_MAX_NARROW_PER_RUN = 30;
+
+// Compute the next shared tower width after a run. Pure + deterministic so the
+// server is the single source of truth. `current` is the width before the run,
+// `floors` is floors the run added, `perfect` flags a flawless run.
+export function narrowTower(
+  current: number,
+  floors: number,
+  perfect: boolean
+): number {
+  if (floors <= 0) return current;
+  const perFloor = perfect
+    ? TOWER_NARROW_PER_FLOOR_PERFECT
+    : TOWER_NARROW_PER_FLOOR;
+  const drop = Math.min(floors * perFloor, TOWER_MAX_NARROW_PER_RUN);
+  return Math.max(TOWER_MIN_WIDTH, current - drop);
+}
+
 // Derive the full DailySeed from a date string and the current community state.
 // Pure function — safe to call from server or client.
 //

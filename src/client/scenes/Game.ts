@@ -9,6 +9,8 @@ import type {
 } from '../../shared/api';
 import {
   PALETTES,
+  TOWER_MIN_WIDTH,
+  TOWER_START_WIDTH,
   dailyChallengeName,
   hashString,
   mulberry32,
@@ -92,6 +94,10 @@ export class GameScene extends Scene {
 
   private daily!: DailySeed;
   private communityFloors = 0;
+  // Width of the shared tower's top floor, inherited from the sub. The player's
+  // first block starts at this width and their run narrows it for the next
+  // builder. Server-authoritative; updated from /api/init and /api/submit.
+  private towerWidth = TOWER_START_WIDTH;
   private personalBest = 0;
   private streak = 0;
   private builders = 0;
@@ -355,6 +361,7 @@ export class GameScene extends Scene {
     }
     this.daily = init.daily;
     this.communityFloors = init.communityFloors;
+    this.towerWidth = init.towerWidth ?? TOWER_START_WIDTH;
     this.personalBest = init.personalBest;
     this.streak = init.streak;
     this.builders = init.builders;
@@ -382,10 +389,11 @@ export class GameScene extends Scene {
     this.updateStreakWarning();
     this.updateNextClaim();
     const remaining = Math.max(0, this.daily.communityGoal - this.communityFloors);
-    const base =
+    const goalLine =
       remaining > 0
-        ? `${remaining} floors left to reach today's goal. Stack as high as you can.`
-        : "Today's goal is reached — keep stacking to push it higher.";
+        ? `${remaining} floors left to reach today's goal.`
+        : 'Goal reached — keep stacking to push it higher.';
+    const base = `${this.towerLine()} ${goalLine}`;
     const dayName = dailyChallengeName(this.daily.date);
     this.showOverlay({
       title: this.daily.goalUnlocked
@@ -403,6 +411,26 @@ export class GameScene extends Scene {
       // shows on the first ever interaction, not on every cold load.
       this.showTutorialBanner();
     }
+  }
+
+  // Short human label for how far the sub has narrowed the shared tower. Drives
+  // the start-overlay copy so the "hand to hand" mechanic is legible before the
+  // player taps: the thinner the tower, the more the sub has whittled it.
+  private towerStatus(): string {
+    const span = TOWER_START_WIDTH - TOWER_MIN_WIDTH;
+    const pct = span > 0 ? (this.towerWidth - TOWER_MIN_WIDTH) / span : 1;
+    if (this.towerWidth >= TOWER_START_WIDTH - 4) return 'wide open';
+    if (pct > 0.66) return 'still wide';
+    if (pct > 0.4) return 'narrowing';
+    if (pct > 0.15) return 'getting narrow';
+    return 'razor-thin';
+  }
+
+  // One sentence telling the player they share one tower with the sub and what
+  // state the sub has left it in.
+  private towerLine(): string {
+    const verb = this.communityFloors > 0 ? 'continuing' : 'starting';
+    return `You're ${verb} the sub's tower — it's ${this.towerStatus()}.`;
   }
 
   // localStorage flag — silent on failures (private mode, quota, etc.).
@@ -573,11 +601,20 @@ export class GameScene extends Scene {
       };
       this.stacks.push(block);
     }
-    // First real platform is the floor players stack on.
+    // First real platform is the floor players stack on. Its width is the
+    // shared tower's current top-floor width — the sub has been narrowing this
+    // one tower all day, so the player continues from where the last builder
+    // left it rather than a fresh wide block. The wide ghost base below shows
+    // the foundation the sub started from.
+    const topWidth = Phaser.Math.Clamp(
+      this.towerWidth,
+      TOWER_MIN_WIDTH,
+      PLAY_WIDTH
+    );
     this.stacks.push({
       x: this.scale.width / 2,
       y: baseY + ghostCount * PLATFORM_HEIGHT,
-      width: PLAY_WIDTH,
+      width: topWidth,
       depth: 0,
       color: Phaser.Display.Color.HexStringToColor(palette.block).color,
       isGhost: false,
@@ -805,7 +842,7 @@ export class GameScene extends Scene {
     this.updateHud();
     this.showOverlay({
       title: 'Ready again?',
-      sub: 'Stack blocks to add to today’s sub skyline.',
+      sub: this.towerLine(),
       button: 'STACK',
       leaderboardHtml: this.leaderboardHtml(),
       rivalHtml: this.rivalHtml(),
@@ -1036,6 +1073,7 @@ export class GameScene extends Scene {
       return;
     }
     this.communityFloors = data.communityFloors;
+    this.towerWidth = data.towerWidth ?? this.towerWidth;
     this.personalBest = data.personalBest;
     this.streak = data.streak;
     this.builders = data.builders;
@@ -1145,6 +1183,13 @@ export class GameScene extends Scene {
     summaryLines.push(
       `<div class="summary-row"><span class="label">Sub total</span><span class="value">${data.communityFloors} / ${this.daily.communityGoal}</span></div>`
     );
+    // How narrow you left the shared tower for the next builder — makes the
+    // hand-to-hand contribution legible even on a zero-floor run.
+    if (data.floorsAdded > 0) {
+      summaryLines.push(
+        `<div class="summary-row"><span class="label">Tower left for sub</span><span class="value">${this.towerStatus()}</span></div>`
+      );
+    }
     summaryLines.push(
       `<div class="summary-row"><span class="label">Builders today</span><span class="value">${data.builders}</span></div>`
     );

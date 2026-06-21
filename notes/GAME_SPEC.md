@@ -23,7 +23,7 @@ Target length: 20–60 seconds per run.
 
 ## Daily return
 
-- **Daily seed** (UTC): drives palette (3 base variants + a 4th "aurora" palette unlocked when the sub hit yesterday's goal), swing speed (70–160), community goal (12–30), and starting block width. Same for every player in the sub for 24h.
+- **Daily seed** (UTC): drives palette (3 base variants + a 4th "aurora" palette unlocked when the sub hit yesterday's goal), swing speed (70–160), and community goal (12–30). Same for every player in the sub for 24h. (Starting block width is no longer seed-derived — it comes from the shared tower the sub is narrowing; see the community mechanic.)
 - **Streak**: computed server-side from the stored last-play date. Consecutive UTC days with ≥1 stacked floor increment it; skipping a day resets to 1. Spoof-proof (client never sends the count).
 - **Personal best per day**: per-player per-UTC-day, so the leaderboard resets cleanly.
 - **Shared goal**: when the community fills the bar, every active player sees a "Goal Reached" badge. The server records it, and the next UTC day everyone loads into the bonus "aurora" palette ("Aurora unlocked ✨"). Determined server-side from yesterday's stored floors vs. goal — no client trust.
@@ -31,6 +31,7 @@ Target length: 20–60 seconds per run.
 ## Reddit-native / community mechanic
 
 - **Shared sub tower**: every player's successful drop adds floors to `skyline:<UTC-date>:floors` in Redis. New players see those floors as semi-transparent "ghost" platforms before they begin.
+- **One tower, narrowed hand to hand**: the sub builds a single physical tower per day. Its top-floor width lives in `skyline:<UTC-date>:topwidth` and starts wide (`TOWER_START_WIDTH`). Every run narrows it (more for a sloppy run, less for a perfect one) down to a clamped, still-playable minimum (`TOWER_MIN_WIDTH`). Your run's starting block inherits that width, so you continue the sub's tower from where the last builder left it — your contribution changes the difficulty of the next player's session, not just a shared counter. Narrowing is `narrowTower()` in `shared/seed.ts`, applied server-side in `/api/submit` from floors added (the client never asserts the width), capped per run so no single run (or script) can slam the tower to the minimum. Resets with the daily key.
 - **Daily builders board**: each player is one entry in a per-day sorted set (`skyline:<UTC-date>:builders`) scored by their best floors for the day (deduped by user). Top 10 are returned inline in the init/submit responses (and via `/api/leaderboard`) and rendered on the start and end overlays — current user highlighted, perfect runs starred. The live builder count and goal bar also drive the inline post card so the feed entry itself is the hook.
 - **Single-post shared state**: state is scoped to the post so each post becomes one synchronized skyline for its subreddit.
 - **No external client calls**: client hits `/api/*` on the Devvit server; the server is the only thing that touches Reddit APIs.

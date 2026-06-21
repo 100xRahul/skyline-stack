@@ -22,8 +22,9 @@ A run is 20–60 seconds. Perfect stacks (zero overhang) trigger a gold burst an
 
 ## Why it has a hook
 
-- **One-sentence hook**: drop blocks to build today's skyline — every player in the sub adds a floor, and together you reach the goal.
-- **Daily seed**: same challenge for the whole sub for 24h. Palettes, swing speed, and starting block width are deterministic from the UTC date. The seed has a name (e.g. "Stardrop Saturday") so the day has identity.
+- **One-sentence hook**: every player in the sub builds one shared tower, hand to hand — you continue from exactly where the last builder left it, and together you reach the goal.
+- **One shared physical tower (the core hook)**: the sub narrows a single tower across the day. Your run's starting block width is the width the sub's tower currently sits at, so an early builder hands a wide tower forward and a late builder inherits a thin one the whole sub has whittled down. This makes the collaboration *interactive* — your run changes the difficulty of the next player's session, not just a counter both of you watch. Narrowing is server-authoritative (computed from floors added, clamped to a playable minimum, capped per run, reset daily), so it's grief-safe.
+- **Daily seed**: same challenge for the whole sub for 24h. Palette, swing speed, and goal are deterministic from the UTC date. The seed has a name (e.g. "Stardrop Saturday") so the day has identity. (Starting width comes from the shared tower, not the seed.)
 - **Shared visible progress**: the HUD progress bar fills toward today's floor goal as the sub plays. You are not just chasing a personal best — you are pushing the skyline.
 - **Streak**: any day with at least one stacked floor bumps your personal streak counter. A "streak at risk" warning fires in the overlay if you played yesterday but not today.
 - **Milestone ownership**: every 5th floor (and the final goal floor) is permanently claimed by the first player to cross it. Their username is etched on the floor in the stack and on the splash.

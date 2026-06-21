@@ -48,6 +48,10 @@ export type InitResponse = {
   daily: DailySeed;
   // Total community floors at the moment this player loaded the page.
   communityFloors: number;
+  // Current width of the shared tower's top floor (px). The sub narrows this
+  // one tower across the day; the player's first block inherits this width, so
+  // later builders continue a thinner tower the whole sub has been whittling.
+  towerWidth: number;
   // Caller's personal best floor count for today's seed.
   personalBest: number;
   // Caller's active streak (consecutive days with at least 1 floor).
@@ -95,6 +99,9 @@ export type SubmitResponse = {
   communityFloors: number;
   // Floors added to the community by this run.
   floorsAdded: number;
+  // Shared tower width after this run narrowed it. The next builder (and this
+  // player's own retry) inherits this thinner tower.
+  towerWidth: number;
   // Whether the community reached its daily goal as a result of this run.
   goalReached: boolean;
   // Caller's personal best after this run.
