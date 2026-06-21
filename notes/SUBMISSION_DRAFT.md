@@ -32,7 +32,7 @@ A run is 20–60 seconds. Perfect stacks (zero overhang) trigger a gold burst an
 - **Rival indicator**: the end-of-run overlay names the player you're chasing.
 - **PB ghost**: a faint gold line marks your previous best height.
 - **Daily goal comment**: the first run that tips the sub over today's goal triggers a Reddit comment from the app account announcing it.
-- **Constrained contribution**: every run contributes a small numeric artifact (`username`, `floors`, `perfect`). No free-form text.
+- **Constrained contribution**: every run submits `(username, floors, perfect, optional name)` to Redis. The name (when present) is a single short word, max 12 chars, server-sanitised (control chars stripped, slur blocklist). All contributions are short-lived (36h TTL), and the named-floor surface is the only piece of free-form text — the rest of the input is numeric.
 
 ## Why it is Reddit-native
 
@@ -57,7 +57,7 @@ A run is 20–60 seconds. Perfect stacks (zero overhang) trigger a gold burst an
 
 ## User contribution mechanic
 
-Every run submits `(username, floors, perfect)` to Redis under `skyline:<UTC-date>:contributors`. The top 10 (by floors) are returned by `/api/leaderboard`. All contributions are short-lived (24h, by key naming), numeric, and reportable via standard Devvit moderation. No free-form text, no avatars, no abuse surface. The /internal/form/share-result form lets the player post a fixed-template share comment with no free-form text.
+Every run submits `(username, floors, perfect)` to Redis under `skyline:<UTC-date>:contributors`. The top 10 (by floors) are returned by `/api/leaderboard`. All contributions are short-lived (36h TTL, by key naming), numeric, and reportable via standard Devvit moderation. The `/api/share-result` endpoint lets the player post a fixed-template share comment with no free-form text. The named-floor surface (a single 12-char word the player can pin to a claimed milestone) is the only free-form UGC; it is server-sanitised and the blocklist is reviewer-extensible.
 
 ## Phaser / technical implementation
 
@@ -80,16 +80,17 @@ Every run submits `(username, floors, perfect)` to Redis under `skyline:<UTC-dat
 ## Devvit features used
 
 - Custom post with two entrypoints (`splash.html` for the inline post card, `game.html` for the full-screen game).
-- Hono server endpoints: `/api/init`, `/api/submit`, `/api/leaderboard`.
-- `redis` for daily seed state, per-user streaks, personal bests, lifetime counters, achievement hashes, milestone floor owners, and community floors.
+- Hono server endpoints: `/api/init`, `/api/submit`, `/api/leaderboard`, `/api/share-result`.
+- `redis` for daily seed state, per-user streaks, personal bests, lifetime counters, achievement hashes, milestone floor owners, player-named floor labels, base-palette history, and rate-limit buckets.
 - `reddit.getCurrentUsername()` for attribution.
-- `reddit.submitComment` for the once-per-day "goal reached" comment.
+- `reddit.submitComment` for the once-per-day "goal reached" comment and the share-template comment.
 - `requestExpandedMode(e, 'game')` to expand the inline post card into the fullscreen game.
-- `context.subredditName` for the subreddit pill in the HUD and the splash label.
+- `context.subredditName` for the subreddit pill in the HUD, the share comment template, and the splash label.
 - Menu item: moderators can create a fresh skyline post.
 - `onAppInstall` trigger creates the initial post.
-- `Devvit Form` (custom share-result form) registered in `devvit.json`.
-- Batched Redis reads (`Promise.all`) for both `/api/init` (7 independent reads) and `/api/submit` (4 trailing reads) to keep the request budget under 30s.
+- `Devvit Form` registered in `devvit.json` (placeholder for the legacy form entry).
+- Batched Redis reads (`Promise.all`) for both `/api/init` (9 independent reads) and `/api/submit` (5 trailing reads) to keep the request budget under 30s.
+- Per-user per-minute rate limiting on init (30/min), submit (20/min), and share (6/min) with 70-second TTL buckets.
 
 ## Compliance notes
 

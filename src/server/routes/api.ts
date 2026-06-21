@@ -22,7 +22,6 @@ const api = new Hono();
 // - Every player in the subreddit shares the same community tower for the day.
 // - The daily seed resets at UTC midnight.
 // - Per-user personal best is per (user, day) so daily leaderboards are honest.
-const dayKey = (date: string) => `skyline:${date}`;
 const floorsKey = (date: string) => `skyline:${date}:floors`;
 // Today's builders, stored as a sorted set keyed by username with the player's
 // best floor count for the day as the score. zAdd dedupes by member, so each
@@ -388,10 +387,7 @@ api.post('/submit', async (c) => {
     const perfect = !!body.perfect && floors > 0;
     const date = todayUtc();
 
-    // Mark the day so the key set is consistent, then add this run's floors to
-    // the shared community total.
-    await redis.set(dayKey(date), '1');
-    await redis.expire(dayKey(date), DAILY_TTL_SECONDS);
+    // Add this run's floors to the shared community total.
     const after = await redis.incrBy(floorsKey(date), floors);
     await redis.expire(floorsKey(date), DAILY_TTL_SECONDS);
 
@@ -439,9 +435,11 @@ api.post('/submit', async (c) => {
     const before = after - floors;
 
     // Claim any milestone floors this run crossed (community floors in the range
-    // before < floor <= after). First player to cross a milestone owns it.
+    // before < floor <= after). First player to cross a milestone owns it. We
+    // set the TTL up front so a mid-loop crash doesn't leak orphan owners.
     const claimedFloors: number[] = [];
     if (floors > 0) {
+      await redis.expire(ownersKey(date), DAILY_TTL_SECONDS);
       for (let floor = before + 1; floor <= after; floor++) {
         if (!isMilestone(floor, goal)) continue;
         const claimed = await redis.hSetNX(
@@ -450,9 +448,6 @@ api.post('/submit', async (c) => {
           username
         );
         if (claimed === 1) claimedFloors.push(floor);
-      }
-      if (claimedFloors.length > 0) {
-        await redis.expire(ownersKey(date), DAILY_TTL_SECONDS);
       }
     }
 
@@ -472,12 +467,14 @@ api.post('/submit', async (c) => {
       const clean = sanitiseFloorName(requestedName);
       if (clean) {
         try {
+          // Set the TTL up front so a name write that fails validation
+          // doesn't leak a forever-lived hash.
+          await redis.expire(floorNamesKey(date), DAILY_TTL_SECONDS);
           const owners = await readFloorOwners(date);
           if (owners[String(requestedNameFloor)]?.toLowerCase() === username.toLowerCase()) {
             await redis.hSet(floorNamesKey(date), {
               [String(requestedNameFloor)]: clean,
             });
-            await redis.expire(floorNamesKey(date), DAILY_TTL_SECONDS);
             nameAccepted = true;
           }
         } catch (e) {
