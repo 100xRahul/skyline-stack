@@ -46,14 +46,24 @@ export const DAILY_TTL_SECONDS = 36 * 60 * 60;
 // the special "aurora" palette as a visible reward for everyone today. The RNG
 // is consumed in a fixed order regardless of the unlock so swingSpeed and
 // communityGoal stay deterministic for the day (init and submit must agree).
+//
+// `previousBase` is the base palette (0/1/2) used by the previous day, if
+// known. When supplied, the function guarantees the returned base palette
+// is different so the sky colour always changes day-to-day.
 export function buildDailySeed(
   date: string,
   communityFloors: number,
-  goalUnlocked = false
+  goalUnlocked = false,
+  previousBase: 0 | 1 | 2 | null = null
 ): DailySeed {
   const rng = mulberry32(hashString(date));
-  // Palette cycles 3 ways so the same color never appears two days in a row.
-  const basePalette = Math.floor(rng() * 3) as 0 | 1 | 2;
+  // Base palette is one of 0/1/2 (the aurora bonus is layered on top later).
+  let basePalette: 0 | 1 | 2 = Math.floor(rng() * 3) as 0 | 1 | 2;
+  if (previousBase !== null && basePalette === previousBase) {
+    // Bump to the next palette in the cycle. The modulo wraps the small
+    // 3-element cycle so we never return the same value.
+    basePalette = ((basePalette + 1) % 3) as 0 | 1 | 2;
+  }
   // Swing speed ramps from 70 (easy) to 160 (hard) and back.
   const swingSpeed = 70 + rng() * 90;
   // Block width shrinks slightly as the tower grows so perfects feel earned.
@@ -71,6 +81,25 @@ export function buildDailySeed(
     blockWidth,
     goalUnlocked,
   };
+}
+
+// Pick a base palette id (0/1/2) for a date such that it's not the same as
+// the previous day's effective palette. Used by the server to enforce the
+// "no two days in a row share a palette" promise. Returns one of 0/1/2.
+// `previousBase` is the previous day's base palette (0/1/2) or null when
+// the player has never loaded the game before.
+export function nextBasePalette(
+  date: string,
+  previousBase: 0 | 1 | 2 | null
+): 0 | 1 | 2 {
+  const rng = mulberry32(hashString(date));
+  let pick: 0 | 1 | 2 = Math.floor(rng() * 3) as 0 | 1 | 2;
+  if (previousBase !== null && pick === previousBase) {
+    // Bump to the next palette in the cycle. The modulo wraps the small
+    // 3-element cycle so we never return the same value.
+    pick = ((pick + 1) % 3) as 0 | 1 | 2;
+  }
+  return pick;
 }
 
 // A short, memorable challenge name per UTC day. Each date deterministically

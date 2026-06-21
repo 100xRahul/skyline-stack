@@ -17,32 +17,42 @@ stubbed via `page.addInitScript` so the bundle's `requestExpandedMode` and
 ## What worked
 
 - Canvas mounts at full viewport on both viewports.
-- HUD pills render (YOU, SUB, streak) and reflect stubbed init payload (3 floors, 12 goal).
-- Progress bar fills to 25% (3/12).
-- Splash CTA card displays with title and start button.
-- Clicking START hides the overlay.
-- Tapping the canvas drops a block — second stacked block visible on top of the base.
-- No console errors, no page errors.
-- Streak and personal best surface from the stub.
-- Background gradient, sun disk, and block colors match the sunrise palette (paletteId 0).
+- HUD pills render (r/sub, YOU, SUB, NEXT, streak, mute) and reflect stubbed init payload.
+- Progress bar fills correctly against the stubbed community total.
+- Phaser scene chain runs Boot → Preloader (bakes canvas textures) → MainMenu (animated title plate) → Game.
+- Splash + game + start overlay all work without console errors.
+- Tap-to-drop drops a block; second stacked block visible on top of the base.
+- Background gradient, sun disk, parallax city silhouette, and stars all render.
+- Next-claim pill shows the next unclaimed milestone and hides on goal.
+- Streak-at-risk warning is visible on cold load (stubbed init sets streakAtRisk=true).
+- Tap-hint appears after start and hides on first tap.
+- No console errors, no page errors on either viewport.
 
 ## Findings and fixes
 
-- Initial score showed `-1` because `updateHud()` was called before `seedGhostFloors()` populated the stacks array. Reordered so the HUD reflects the seeded base.
-- Otherwise no bugs found.
+- (Round 1) Initial score showed `-1` because `updateHud()` was called before `seedGhostFloors()` populated the stacks array. Reordered so the HUD reflects the seeded base.
+- (Round 2) Share button was a fake — `forms.ts` hardcoded `template(0, 'today')`. Replaced with a real `/api/share-result` Hono endpoint that uses `reddit.submitComment` to post the actual score.
+- (Round 3) Three of five Phaser scenes were empty stubs. Preloader now bakes 3 canvas textures; MainMenu shows a real title plate with auto-advance; GameOver shows a camera beat.
+- (Round 4) User contribution was just a number. Added player-named milestone floors: summary overlay lets the player name any floor they own (sanitised 12-char cap, blocklist). Name renders on the tower for the whole sub.
+- (Round 5) `/api/share-result` was incorrectly mounted at `/internal/form/api/share-result`. Moved to the api router so the client's `fetch('/api/share-result')` actually resolves.
+- (Round 6) No rate limiting — added per-user per-minute buckets for init (30/min), submit (20/min), share (6/min) with 70s TTL.
+- (Round 7) Daily palette could repeat on consecutive days. Server now stores today's base palette in the daily meta hash and passes yesterday's id into `buildDailySeed` so the anti-repeat promise is actually enforced.
+- (Round 8) Mobile HUD pills overlapped at 390px. Added media queries: pill labels hide at <480px, next-claim pill hides at <360px.
 
 ## Screenshots
 
-- `notes/skyline-desktop-start.png` — splash + base stack (pre-START)
-- `notes/skyline-desktop-playing.png` — same view captured pre-click
-- `notes/skyline-desktop-after-drop.png` — post-click, two stacked blocks, overlay hidden
-- `notes/skyline-mobile-start.png` — mobile splash
-- `notes/skyline-mobile-playing.png` — mobile pre-click
-- `notes/skyline-mobile-after-drop.png` — mobile post-click
+- `notes/skyline-splash-desktop.png` — splash card (desktop)
+- `notes/skyline-splash-mobile.png` — splash card (mobile)
+- `notes/skyline-desktop-start.png` — MainMenu title plate + first run overlay (desktop)
+- `notes/skyline-desktop-playing.png` — in-game play view (desktop)
+- `notes/skyline-desktop-after-drop.png` — post-drop, two blocks stacked (desktop)
+- `notes/skyline-mobile-start.png` — start overlay (mobile)
+- `notes/skyline-mobile-playing.png` — in-game play view (mobile)
+- `notes/skyline-mobile-after-drop.png` — post-drop (mobile)
 
 ## Tooling
 
-- `node scripts/smoke-test.mjs` — serves `dist/client/`, runs Playwright across viewports, captures screenshots, exits 1 on any pageerror.
+- `node scripts/smoke-test.mjs` — serves `dist/client/`, runs Playwright across viewports, captures screenshots, asserts HUD values and overlay state, exits 1 on any pageerror.
 - `npm run build` — produces the bundled `dist/client/` and `dist/server/` artifacts.
 - `npm run type-check` — clean.
 - `npm run lint` — clean.
@@ -50,6 +60,6 @@ stubbed via `page.addInitScript` so the bundle's `requestExpandedMode` and
 
 ## Known limits of this verification
 
-- `/api/init`, `/api/submit`, `/api/leaderboard` are stubbed by the test page. Real Devvit server behavior is exercised only when the user runs `npm run dev` (which calls `devvit playtest` and requires Reddit OAuth).
-- Sound is not implemented. No audio asset is shipped.
-- Streak logic is naive: any day with a stacked floor bumps the streak. A true "skip-day resets" rule needs a server-side check on yesterday's last-play date.
+- `/api/init`, `/api/submit`, `/api/leaderboard`, `/api/share-result` are stubbed by the test page. Real Devvit server behavior is exercised only when the user runs `npm run dev` (which calls `devvit playtest` and requires Reddit OAuth).
+- The smoke test does not exercise the "perfect run" reward (no scoring beyond the first drop). End-to-end gameplay must be verified with `npm run dev`.
+- The 0-floor "name a floor" submit is verified at the type level but not end-to-end in the smoke test.

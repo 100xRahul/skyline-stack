@@ -11,6 +11,7 @@ import type {
 import {
   DAILY_TTL_SECONDS,
   buildDailySeed,
+  dailyChallengeName,
   todayUtc,
   yesterdayUtc,
 } from '../../shared/seed';
@@ -60,9 +61,32 @@ const lifetimePerfectsKey = (username: string) =>
 // Using a hash because Devvit's Redis doesn't expose the SET data type.
 const achievementsKey = (username: string) =>
   `skyline:ach:${username.toLowerCase()}`;
+// Per-user rolling rate-limit bucket. We use a 1-minute window with a
+// counter that auto-expires. The window is a per-(minute, endpoint) key
+// so the limit is independent across endpoints.
+const rateLimitKey = (username: string, endpoint: string) =>
+  `skyline:rl:${endpoint}:${username.toLowerCase()}:${Math.floor(Date.now() / 60_000)}`;
 // Streak data is kept for 60 days of inactivity, then garbage-collected.
 const STREAK_TTL_SECONDS = 60 * 24 * 60 * 60;
 // Lifetime totals and achievements are permanent — no TTL is set on them.
+
+// Cheap per-minute rate limiter. Returns true when the user is over the
+// limit. We use Redis incrBy + a 70s TTL on the bucket so the counter
+// self-cleans even if the player goes idle. The TTL is slightly longer
+// than the window so a request that lands at the very end of one window
+// and the start of the next still observes a consistent count.
+async function isRateLimited(
+  username: string,
+  endpoint: string,
+  limit: number
+): Promise<boolean> {
+  const key = rateLimitKey(username, endpoint);
+  const count = await redis.incrBy(key, 1);
+  if (count === 1) {
+    await redis.expire(key, 70);
+  }
+  return count > limit;
+}
 
 // Read the top contributors for a day, joining the builders sorted set with the
 // perfect-run hash so the leaderboard can flag perfect players.
@@ -254,15 +278,24 @@ api.get('/init', async (c) => {
   }
   try {
     const username = (await reddit.getCurrentUsername()) ?? 'anonymous';
+    // Per-user rate limit: 30 init calls per minute. Generous enough to
+    // cover retries, hot-reloads, and dev-tools tinkering.
+    if (await isRateLimited(username, 'init', 30)) {
+      return c.json<ErrorResponse>(
+        { status: 'error', message: 'Too many requests' },
+        429
+      );
+    }
     const date = todayUtc();
     const communityFloorsRaw = await redis.get(floorsKey(date));
     const communityFloors = communityFloorsRaw
       ? parseInt(communityFloorsRaw, 10)
       : 0;
     const goalUnlocked = await goalReachedOn(yesterdayUtc());
-    const daily = buildDailySeed(date, communityFloors, goalUnlocked);
     // Fan out the remaining independent reads in parallel — they don't depend
-    // on each other.
+    // on each other. The previous day's base palette lives in the daily
+    // meta hash; we read it here so the base-palette "no repeats" check
+    // is correct on a single round-trip.
     const [
       pbRaw,
       streak,
@@ -272,6 +305,7 @@ api.get('/init', async (c) => {
       floorOwners,
       floorNames,
       achievements,
+      previousBaseRaw,
     ] = await Promise.all([
       redis.get(personalKey(date, username)),
       readStreak(username),
@@ -281,7 +315,20 @@ api.get('/init', async (c) => {
       readFloorOwners(date),
       readFloorNames(date),
       readAchievements(username),
+      redis.hGet(metaKey(yesterdayUtc()), 'basePalette'),
     ]);
+    const previousBase =
+      previousBaseRaw === '0' || previousBaseRaw === '1' || previousBaseRaw === '2'
+        ? (parseInt(previousBaseRaw, 10) as 0 | 1 | 2)
+        : null;
+    const daily = buildDailySeed(date, communityFloors, goalUnlocked, previousBase);
+    // Persist today's base palette for tomorrow's anti-repeat check. We
+    // only record the base (0/1/2) — the aurora bonus (3) is overlaid at
+    // draw time, never stored.
+    await redis.hSet(metaKey(date), {
+      basePalette: String(daily.paletteId === 3 ? 0 : daily.paletteId),
+    });
+    await redis.expire(metaKey(date), DAILY_TTL_SECONDS);
     const personalBest = pbRaw ? parseInt(pbRaw, 10) : 0;
     // Streak is at risk if the player has an active streak and yesterday is
     // the most recent day they played — i.e. the streak expires at UTC midnight.
@@ -293,6 +340,7 @@ api.get('/init', async (c) => {
       type: 'init',
       postId,
       username,
+      subredditName: context.subredditName ?? '',
       daily,
       communityFloors,
       personalBest,
@@ -325,10 +373,19 @@ api.post('/submit', async (c) => {
     );
   }
   try {
+    const username = (await reddit.getCurrentUsername()) ?? 'anonymous';
+    // Rate limit: 20 submits per minute. A normal player submits once
+    // per run (30s) and a fast double-tap stack is the worst case, so
+    // 20 is well above the human ceiling and well below a script.
+    if (await isRateLimited(username, 'submit', 20)) {
+      return c.json<ErrorResponse>(
+        { status: 'error', message: 'Too many runs. Slow down.' },
+        429
+      );
+    }
     const body = (await c.req.json()) as ScoreSubmission;
     const floors = Math.max(0, Math.min(99, Math.floor(body.floors ?? 0)));
     const perfect = !!body.perfect && floors > 0;
-    const username = (await reddit.getCurrentUsername()) ?? 'anonymous';
     const date = todayUtc();
 
     // Mark the day so the key set is consistent, then add this run's floors to
@@ -549,6 +606,67 @@ api.get('/leaderboard', async (c) => {
       },
       500
     );
+  }
+});
+
+// Fixed comment templates for share-to-post. The player picks one of three
+// tones; the rest of the comment is filled in by the server with their
+// score and the day's name. Subreddit name is read from the server
+// context at submission time.
+const SHARE_TEMPLATES = [
+  (floors: number, day: string) =>
+    `I just stacked ${floors} floors in Skyline — ${day}. Come add yours to r/${context.subredditName}.`,
+  (floors: number, day: string) =>
+    `${floors} floors in, no misses. ${day} on the Skyline leaderboard — your turn.`,
+  (floors: number, day: string) =>
+    `Built ${floors} floors of today's Skyline (${day}). Help r/${context.subredditName} reach its goal.`,
+];
+
+type ShareResultBody = {
+  // Which template to use (1-indexed). Anything outside [1,3] is rejected.
+  template?: number;
+  // Caller-supplied floor count. We sanitise: must be a non-negative integer.
+  floors?: number;
+  // Optional override; if absent we resolve the day name from today's UTC date.
+  dayName?: string;
+};
+
+// Client-facing API: posts a real Reddit comment with the player's score
+// and today's day name filled in. Replaces the previous form-based stub
+// that hardcoded `template(0, 'today')`.
+api.post('/share-result', async (c) => {
+  try {
+    const username = (await reddit.getCurrentUsername()) ?? 'anonymous';
+    // Rate limit: 6 shares per minute. A player can only share one
+    // template per run, and at most one run per 30s, so 6/min is well
+    // above the honest ceiling.
+    if (await isRateLimited(username, 'share', 6)) {
+      return c.json({ ok: false, error: 'too many shares' }, 429);
+    }
+    const body = (await c.req.json()) as ShareResultBody;
+    const templateIdx = Math.floor(Number(body.template ?? 1)) - 1;
+    if (
+      !Number.isInteger(templateIdx) ||
+      templateIdx < 0 ||
+      templateIdx >= SHARE_TEMPLATES.length
+    ) {
+      return c.json({ ok: false, error: 'invalid template' }, 400);
+    }
+    const floors = Math.max(0, Math.floor(Number(body.floors ?? 0)));
+    const day = (body.dayName ?? '').trim() || dailyChallengeName(todayUtc());
+    const text = SHARE_TEMPLATES[templateIdx]!(floors, day);
+
+    // Post the comment on the current post as the app account. This is a
+    // user-initiated share, so it's safe to publish.
+    const postId = context.postId as `t3_${string}` | undefined;
+    if (!postId) {
+      return c.json({ ok: false, error: 'no post context' }, 400);
+    }
+    await reddit.submitComment({ id: postId, text, runAs: 'APP' });
+    return c.json({ ok: true, posted: text }, 200);
+  } catch (err) {
+    console.error('share-result failed', err);
+    return c.json({ ok: false, error: 'share failed' }, 500);
   }
 });
 

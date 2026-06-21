@@ -821,3 +821,41 @@ body {
     padding: 10px 22px;
   }
 }
+
+/* Mobile HUD layout: pills must fit on a 390px-wide viewport. We hide
+   the labels (which already live in aria-label attributes for a11y) and
+   let the values speak for themselves. The Next-claim pill is hidden on
+   very narrow viewports because the community progress bar already
+   carries the same information. */
+@media (max-width: 480px) {
+  #hud-top {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  #subreddit-pill .pill-label,
+  #score-pill .pill-label,
+  #community-pill .pill-label,
+  #next-claim-pill .pill-label,
+  #streak-pill .pill-label {
+    display: none;
+  }
+  #subreddit-pill,
+  #score-pill,
+  #community-pill,
+  #next-claim-pill,
+  #streak-pill {
+    padding: 5px 9px;
+    font-size: 13px;
+  }
+  #subreddit-name {
+    max-width: 80px;
+  }
+}
+
+@media (max-width: 360px) {
+  /* Very small phones — drop the next-claim pill entirely. The progress
+     bar at the bottom already carries the same information. */
+  #next-claim-pill {
+    display: none !important;
+  }
+}

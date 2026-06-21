@@ -85,6 +85,7 @@ async function runChecks(label, contextOptions) {
             type: 'init',
             postId: 't3_smoketest',
             username: 'smoketester',
+            subredditName: 'SkylineDemo',
             communityFloors: 3,
             personalBest: 0,
             streak: 2,
@@ -92,6 +93,8 @@ async function runChecks(label, contextOptions) {
             streakAtRisk: true,
             leaderboard,
             floorOwners: { 5: 'somebody', 10: 'smoketester' },
+            floorNames: {},
+            achievements: [],
             daily: {
               date: '2026-06-21',
               paletteId: 0,
@@ -119,6 +122,10 @@ async function runChecks(label, contextOptions) {
             leaderboard,
             claimedFloors: [5],
             floorOwners: { 5: 'smoketester', 10: 'smoketester' },
+            floorNames: {},
+            nameAccepted: false,
+            achievements: [],
+            newlyUnlocked: [],
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );

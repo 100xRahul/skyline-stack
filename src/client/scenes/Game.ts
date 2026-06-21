@@ -103,7 +103,6 @@ export class GameScene extends Scene {
   // Persistent achievement state from the server. We keep a copy so the
   // achievement toast only fires for achievements the player just unlocked.
   private achievements: AchievementState[] = [];
-  private lastSeenAchievements: Set<string> = new Set();
 
   private stacks: Stack[] = [];
   private currentBlock!: Phaser.GameObjects.Rectangle;
@@ -367,6 +366,14 @@ export class GameScene extends Scene {
     // Server can hint when a streak is "at risk" — set by /api/init so the
     // overlay and HUD can nudge the player back.
     this.streakAtRisk = init.streakAtRisk ?? false;
+    // Server-side subreddit name is the most reliable source. The
+    // in-process globalThis.devvit read in setupSubredditPill() may
+    // race with bundle ordering, so we overwrite here.
+    if (init.subredditName) {
+      this.subredditName = init.subredditName;
+      const pill = document.getElementById('subreddit-name');
+      if (pill) pill.textContent = init.subredditName;
+    }
 
     this.paintBackground();
     this.seedGhostFloors();
@@ -1259,8 +1266,9 @@ export class GameScene extends Scene {
     // Wire the floor-naming panel. The player picks which milestone they
     // want to name, types a short word, and the server stores it after
     // confirming the player owns that floor. The updated name shows on
-    // the tower for everyone in the sub.
-    this.wireNameFloorPanel(placedFloors, goal, perfect);
+    // the tower for everyone in the sub. The placeholder nudges tone by
+    // context: a perfect run gets the celebratory hint.
+    this.wireNameFloorPanel(perfect);
   }
 
   // Floors the player owns today and can rename. Combines floors claimed
@@ -1277,12 +1285,14 @@ export class GameScene extends Scene {
     return Array.from(owned).sort((a, b) => a - b);
   }
 
-  private wireNameFloorPanel(placedFloors: number, goal: boolean, perfect: boolean) {
+  private wireNameFloorPanel(perfect: boolean) {
     const btn = document.getElementById('name-floor-submit') as HTMLButtonElement | null;
     const input = document.getElementById('name-floor-input') as HTMLInputElement | null;
     const select = document.getElementById('name-floor-pick') as HTMLSelectElement | null;
     const status = document.getElementById('name-floor-status') as HTMLDivElement | null;
     if (!btn || !input || !select || !status) return;
+    // Contextual placeholder — a perfect run gets the celebratory hint.
+    input.placeholder = perfect ? 'Apex, ⭐, 🏆' : 'e.g. Apex, ⭐';
     btn.onclick = async (e) => {
       e.stopPropagation();
       const floor = parseInt(select.value, 10);
@@ -1335,30 +1345,20 @@ export class GameScene extends Scene {
     btn.addEventListener('pointerdown', (e) => e.stopPropagation());
     input.addEventListener('pointerdown', (e) => e.stopPropagation());
     select.addEventListener('pointerdown', (e) => e.stopPropagation());
-    // Quietly satisfy the linter about unused params.
-    void placedFloors;
-    void goal;
-    void perfect;
   }
 
   // Clear and redraw the milestone owner tags so a freshly-saved name
-  // shows up immediately. The next paintBackground() will call this
-  // naturally, but the player just renamed a floor — they should see it
-  // now.
+  // shows up immediately. The baseY for the labels must match what
+  // seedGhostFloors used: the first ghost sits at FIRST_PLATFORM_Y_RATIO
+  // of the canvas height, regardless of how high the player's stack has
+  // climbed. (Camera pan is applied on top, in world coordinates.)
   private refreshFloorOwnerLabels() {
     for (const lbl of this.floorOwnerLabels) lbl.destroy();
     this.floorOwnerLabels = [];
-    if (this.stacks.length === 0) return;
-    // The first non-ghost stack is the run's "floor 1" — the rest are the
-    // ghost tower mirrored from the community total. We re-draw against
-    // the same layout the original draw used.
+    if (!this.daily || this.stacks.length === 0) return;
     const ghostCount = this.stacks.filter((s) => s.isGhost).length;
     if (ghostCount === 0) return;
-    // baseY matches drawStacks: first ghost sits on top of the player's
-    // first placed block, with PLATFORM_HEIGHT between each. We use a
-    // simple anchor: the bottommost ghost is at the same y as the last
-    // placed block + PLATFORM_HEIGHT.
-    const baseY = this.stacks[this.stacks.length - 1]?.y ?? 0;
+    const baseY = this.scale.height * FIRST_PLATFORM_Y_RATIO;
     this.drawFloorOwners(ghostCount, baseY);
   }
 

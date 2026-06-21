@@ -39,6 +39,9 @@ export type InitResponse = {
   type: 'init';
   postId: string;
   username: string;
+  // Subreddit this post lives in. Used for the HUD pill and the share
+  // comment template. Read on the server from the post context.
+  subredditName: string;
   daily: DailySeed;
   // Total community floors at the moment this player loaded the page.
   communityFloors: number;

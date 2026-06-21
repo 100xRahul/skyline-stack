@@ -110,3 +110,79 @@ Tradeoff:
 Follow-up:
   None.
 ```
+
+```text
+2026-06-23 - Move share endpoint from /internal/form to /api
+Context:
+  The original share-to-post feature registered a Devvit form at
+  /internal/form/share-result with no fields. The client wired the share
+  buttons to call /api/share-result, but the new server code accidentally
+  registered the real handler at forms.post('/api/share-result'), which
+  resolves to /internal/form/api/share-result — a 404 in production. The
+  only reason this didn't blow up in the smoke test is that the smoke
+  test never exercised the share endpoint.
+Decision:
+  Move the real share handler to the api router (api.post('/share-result'))
+  so the URL the client calls actually exists. Keep a no-op form handler
+  at /internal/form/share-result so the devvit.json form declaration is
+  still valid.
+Tradeoff:
+  None — the right home for this endpoint was always /api/*.
+Follow-up:
+  None.
+```
+
+```text
+2026-06-23 - Per-user per-minute rate limiting
+Context:
+  The /api/* endpoints are internet-exposed (the post is public). Without
+  rate limits a single script can call /api/submit thousands of times per
+  second and either burn Redis quota or pollute the leaderboard. The
+  previous build had no rate limiting at all.
+Decision:
+  Add a per-user per-minute Redis bucket. Each endpoint gets its own
+  counter (init: 30/min, submit: 20/min, share: 6/min) with a 70-second
+  TTL. The bucket key includes the current minute so it self-cleans.
+  Counters are 1 incrBy + 1 conditional expire; well under the 30s
+  request budget.
+Tradeoff:
+  One extra Redis op per request. Below noise floor.
+Follow-up:
+  None.
+```
+
+```text
+2026-06-23 - Mobile HUD: hide labels under 480px, drop next-claim under 360px
+Context:
+  The HUD has 5 pills (r/sub, YOU, SUB, NEXT, streak) plus a mute button.
+  At 390px (iPhone 14 width) the pills overlap or get clipped.
+Decision:
+  Add a media query that hides the pill labels (which are already in
+  aria-label for a11y) at <480px and shrinks the pill padding. A second
+  query hides the next-claim pill entirely at <360px because the
+  community progress bar carries the same information.
+Tradeoff:
+  Players on narrow phones lose the textual label but the value
+  remains. They retain the community progress bar as a goal cue.
+Follow-up:
+  None.
+```
+
+```text
+2026-06-23 - Enforce "no two consecutive days share a base palette"
+Context:
+  The seed code claimed "the same color never appears two days in a row"
+  but the implementation was a uniform random draw, so two days could
+  repeat. That was a silent lie in the docs/comments.
+Decision:
+  Make the promise real. Server stores today's base palette (0/1/2) in
+  the daily meta hash and reads yesterday's id on the next init. The
+  buildDailySeed function takes a previousBase argument and bumps to
+  the next palette on collision. First-ever load (no previousBase) gets
+  the unconstrained pick.
+Tradeoff:
+  One extra Redis op on init (read yesterday's meta key, write today's).
+  We already batch the previousBase read into the same Promise.all.
+Follow-up:
+  None.
+```
