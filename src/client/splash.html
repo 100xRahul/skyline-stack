@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <meta name="theme-color" content="#0a0a1a" />
+    <title>Skyline — today's stack</title>
+    <link rel="stylesheet" href="./splash.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="splash">
+        <div class="splash-art" aria-hidden="true">
+          <div class="building b1"></div>
+          <div class="building b2"></div>
+          <div class="building b3"></div>
+          <div class="sun"></div>
+        </div>
+        <div class="content">
+          <h1 class="title">Skyline</h1>
+          <p class="description">
+            Tap blocks into place. Every floor you add pushes
+            <span class="code" id="subreddit-tag">this sub's</span>
+            shared tower toward today's goal.
+          </p>
+          <div id="live-stats" class="live-stats" hidden>
+            <div class="live-bar">
+              <div id="live-fill" class="live-fill"></div>
+            </div>
+            <div class="live-meta">
+              <span id="live-floors">0 / 0 floors today</span>
+              <span id="live-builders"></span>
+            </div>
+          </div>
+          <button id="start-button" class="start-button" type="button">
+            Start today's stack
+          </button>
+        </div>
+        <footer class="footer">
+          <span>Daily challenge · no login · 30s play</span>
+        </footer>
+      </section>
+    </main>
+    <script type="module" src="./splash.ts"></script>
+  </body>
+</html>

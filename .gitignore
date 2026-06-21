@@ -1,0 +1,22 @@
+# Dependencies/build output
+node_modules/
+dist/
+build/
+.devvit/
+.vite/
+.turbo/
+
+# Local env/secrets
+.env
+.env.*
+!.env.example
+secrets.*
+*.token
+
+# Runtime/local notes
+notes/private/
+*.log
+
+# macOS
+.DS_Store
+

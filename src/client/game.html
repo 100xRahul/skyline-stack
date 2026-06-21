@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#0a0a1a" />
+    <title>Skyline — today's stack</title>
+    <link rel="stylesheet" href="./game.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="game-container"></div>
+      <div id="hud">
+        <div id="hud-top">
+          <div id="score-pill" aria-label="Personal score">
+            <span class="pill-label">YOU</span>
+            <span id="score-value">0</span>
+          </div>
+          <div id="community-pill" aria-label="Community progress">
+            <span class="pill-label">SUB</span>
+            <span id="community-value">0</span>
+            <span class="pill-sep">/</span>
+            <span id="community-goal">0</span>
+          </div>
+          <div id="streak-pill" aria-label="Streak">
+            <span class="pill-label">🔥</span>
+            <span id="streak-value">0</span>
+          </div>
+          <button id="mute-button" type="button" aria-label="Toggle sound">
+            🔊
+          </button>
+        </div>
+        <div id="progress-track">
+          <div id="progress-fill"></div>
+        </div>
+      </div>
+      <div id="overlay">
+        <div id="overlay-card">
+          <div id="overlay-title">Loading…</div>
+          <div id="overlay-sub">Fetching today's skyline</div>
+          <button id="overlay-button" type="button" hidden>START</button>
+          <div id="overlay-hint">Today's skyline resets at 00:00 UTC</div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./game.ts"></script>
+  </body>
+</html>
