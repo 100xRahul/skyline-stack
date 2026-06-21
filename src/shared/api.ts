@@ -9,6 +9,9 @@ export type DailySeed = {
   // unlocked when the community hit yesterday's goal). Drives background and
   // block colors.
   paletteId: 0 | 1 | 2 | 3;
+  // The underlying base palette (0-2) before the aurora bonus is applied.
+  // Stored server-side to drive the next day's anti-repeat check.
+  basePalette: 0 | 1 | 2;
   // True when today's palette is the bonus one earned by hitting yesterday's goal.
   goalUnlocked: boolean;
   // Block swing speed in degrees/sec. Higher = harder.

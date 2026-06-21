@@ -325,7 +325,7 @@ api.get('/init', async (c) => {
     // only record the base (0/1/2) — the aurora bonus (3) is overlaid at
     // draw time, never stored.
     await redis.hSet(metaKey(date), {
-      basePalette: String(daily.paletteId === 3 ? 0 : daily.paletteId),
+      basePalette: String(daily.basePalette),
     });
     await redis.expire(metaKey(date), DAILY_TTL_SECONDS);
     const personalBest = pbRaw ? parseInt(pbRaw, 10) : 0;
@@ -435,11 +435,9 @@ api.post('/submit', async (c) => {
     const before = after - floors;
 
     // Claim any milestone floors this run crossed (community floors in the range
-    // before < floor <= after). First player to cross a milestone owns it. We
-    // set the TTL up front so a mid-loop crash doesn't leak orphan owners.
+    // before < floor <= after). First player to cross a milestone owns it.
     const claimedFloors: number[] = [];
     if (floors > 0) {
-      await redis.expire(ownersKey(date), DAILY_TTL_SECONDS);
       for (let floor = before + 1; floor <= after; floor++) {
         if (!isMilestone(floor, goal)) continue;
         const claimed = await redis.hSetNX(
@@ -449,6 +447,9 @@ api.post('/submit', async (c) => {
         );
         if (claimed === 1) claimedFloors.push(floor);
       }
+      // Refresh the TTL after the writes so the key actually exists when we set
+      // it (EXPIRE on a missing key is a no-op and would leave it immortal).
+      await redis.expire(ownersKey(date), DAILY_TTL_SECONDS);
     }
 
     // Player can optionally name a milestone floor they own (claimed in
@@ -467,14 +468,14 @@ api.post('/submit', async (c) => {
       const clean = sanitiseFloorName(requestedName);
       if (clean) {
         try {
-          // Set the TTL up front so a name write that fails validation
-          // doesn't leak a forever-lived hash.
-          await redis.expire(floorNamesKey(date), DAILY_TTL_SECONDS);
           const owners = await readFloorOwners(date);
           if (owners[String(requestedNameFloor)]?.toLowerCase() === username.toLowerCase()) {
             await redis.hSet(floorNamesKey(date), {
               [String(requestedNameFloor)]: clean,
             });
+            // Refresh the TTL after the write — EXPIRE before the key exists is
+            // a no-op and would leave the names hash immortal.
+            await redis.expire(floorNamesKey(date), DAILY_TTL_SECONDS);
             nameAccepted = true;
           }
         } catch (e) {
@@ -649,8 +650,14 @@ api.post('/share-result', async (c) => {
     ) {
       return c.json({ ok: false, error: 'invalid template' }, 400);
     }
-    const floors = Math.max(0, Math.floor(Number(body.floors ?? 0)));
-    const day = (body.dayName ?? '').trim() || dailyChallengeName(todayUtc());
+    // The comment is posted as the APP account, so every value in it must be
+    // server-authoritative. We ignore client-supplied floors/dayName entirely:
+    // floors comes from the player's stored daily best, and the day name is
+    // derived from the UTC date. The client only chooses which fixed template.
+    const date = todayUtc();
+    const pbRaw = await redis.get(personalKey(date, username));
+    const floors = pbRaw ? Math.max(0, Math.min(99, parseInt(pbRaw, 10))) : 0;
+    const day = dailyChallengeName(date);
     const text = SHARE_TEMPLATES[templateIdx]!(floors, day);
 
     // Post the comment on the current post as the app account. This is a

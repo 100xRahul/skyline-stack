@@ -75,6 +75,7 @@ export function buildDailySeed(
   return {
     date,
     paletteId,
+    basePalette,
     swingSpeed,
     communityFloors,
     communityGoal,
