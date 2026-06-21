@@ -79,6 +79,90 @@ body {
   height: 36vh;
 }
 
+/* Animated demo block on the splash. CSS-only — no JS, no extra weight.
+   The block slides left-to-right across the top of the buildings with a
+   shadow underneath and a tap prompt above. This makes the hook obvious
+   in 0 seconds for any scroller who pauses on the post card. */
+.swing-stage {
+  position: absolute;
+  left: 8vw;
+  right: 8vw;
+  bottom: 6vh;
+  height: 60px;
+  pointer-events: none;
+}
+
+.swing-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 24px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 2px;
+}
+
+.swing-block {
+  position: absolute;
+  top: 12px;
+  left: 0;
+  width: 22vw;
+  max-width: 110px;
+  height: 22px;
+  background: rgba(253, 253, 253, 0.95);
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(8, 10, 26, 0.35),
+    0 4px 10px rgba(0, 0, 0, 0.35);
+  animation: swing-block 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  transform-origin: 50% 100%;
+}
+
+.swing-shadow {
+  position: absolute;
+  top: 40px;
+  left: 0;
+  width: 22vw;
+  max-width: 110px;
+  height: 4px;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 2px;
+  filter: blur(2px);
+  animation: swing-shadow 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.swing-arrow {
+  position: absolute;
+  top: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  color: rgba(255, 209, 102, 0.95);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+  animation: swing-arrow 1.4s ease-in-out infinite;
+  white-space: nowrap;
+}
+
+@keyframes swing-block {
+  0%   { left: 0%;   transform: scaleY(0.9); }
+  10%  { transform: scaleY(1); }
+  50%  { left: calc(100% - 22vw); max-width: 110px; transform: scaleY(1); }
+  60%  { transform: scaleY(0.9); }
+  100% { left: 0%;   transform: scaleY(1); }
+}
+
+@keyframes swing-shadow {
+  0%   { left: 0%; opacity: 0.6; }
+  50%  { left: calc(100% - 22vw); max-width: 110px; opacity: 0.45; }
+  100% { left: 0%; opacity: 0.6; }
+}
+
+@keyframes swing-arrow {
+  0%, 100% { transform: translateX(-50%) translateY(0); opacity: 0.7; }
+  50%      { transform: translateX(-50%) translateY(4px); opacity: 1; }
+}
+
 .content {
   position: relative;
   z-index: 1;

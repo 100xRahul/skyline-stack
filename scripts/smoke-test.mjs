@@ -59,7 +59,7 @@ async function runChecks(label, contextOptions) {
       appName: 'skyline-subreddit-stack',
       appVersion: { major: 0, minor: 1, patch: 0 },
       postId: 't3_smoketest',
-      subredditName: 'smoketest',
+      subredditName: 'SkylineDemo',
       userId: 't2_smoke',
       username: 'smoketester',
       appPermissionState: { consentStatus: 1, grantedScopes: [], requestedScopes: [] },
@@ -87,8 +87,9 @@ async function runChecks(label, contextOptions) {
             username: 'smoketester',
             communityFloors: 3,
             personalBest: 0,
-            streak: 0,
-            builders: 2,
+            streak: 2,
+            builders: 4,
+            streakAtRisk: true,
             leaderboard,
             daily: {
               date: '2026-06-21',
@@ -141,6 +142,18 @@ async function runChecks(label, contextOptions) {
   await page.waitForSelector('#game-container canvas', { timeout: 10_000 });
   await page.waitForSelector('#overlay', { state: 'attached', timeout: 5_000 });
 
+  // Wait until bootstrap has finished (overlay-title switches away from
+  // "Loading…" to "Today's Skyline"). Bail out cleanly if not.
+  await page
+    .waitForFunction(
+      () => {
+        const t = document.getElementById('overlay-title');
+        return t && t.textContent && !t.textContent.startsWith('Loading');
+      },
+      { timeout: 8_000 }
+    )
+    .catch(() => {});
+
   const overlayVisible = await page.evaluate(() => {
     const o = document.getElementById('overlay');
     return !!o && !o.classList.contains('overlay-hidden');
@@ -150,18 +163,30 @@ async function runChecks(label, contextOptions) {
     community: document.getElementById('community-value')?.textContent,
     goal: document.getElementById('community-goal')?.textContent,
     streak: document.getElementById('streak-value')?.textContent,
+    subreddit: document.getElementById('subreddit-name')?.textContent,
     canvas: !!document.querySelector('#game-container canvas'),
     canvasWidth: document.querySelector('#game-container canvas')?.width,
     canvasHeight: document.querySelector('#game-container canvas')?.height,
+    comboVisible: document
+      .getElementById('combo-banner')
+      ?.classList.contains('is-visible'),
+    streakWarningVisible: !document
+      .getElementById('streak-warning')
+      ?.hidden,
+    tapHintHidden: document.getElementById('tap-hint')?.hidden,
+    goalBannerHidden: document.getElementById('goal-banner')?.hidden,
   }));
 
   await page.screenshot({ path: `notes/skyline-${label}-start.png`, fullPage: false });
 
   // Tap START.
   await page.click('#overlay-button');
-  await page.waitForTimeout(700);
+  await page.waitForTimeout(400);
   const overlayAfterStart = await page.evaluate(() =>
     document.getElementById('overlay')?.classList.contains('overlay-hidden')
+  );
+  const tapHintVisibleAfterStart = await page.evaluate(
+    () => !document.getElementById('tap-hint')?.hidden
   );
   await page.screenshot({ path: `notes/skyline-${label}-playing.png`, fullPage: false });
 
@@ -173,9 +198,15 @@ async function runChecks(label, contextOptions) {
       await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.45);
     }
   }
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(500);
   await page.mouse.click(640, 320);
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(500);
+
+  // After the first tap, the tap-hint should hide and the combo banner should
+  // not be visible (combo only appears on 2+ perfects).
+  const tapHintHiddenAfterTap = await page.evaluate(
+    () => document.getElementById('tap-hint')?.hidden
+  );
 
   await page.screenshot({ path: `notes/skyline-${label}-after-drop.png`, fullPage: false });
 
@@ -185,6 +216,8 @@ async function runChecks(label, contextOptions) {
     label,
     overlayVisible,
     overlayAfterStart,
+    tapHintVisibleAfterStart,
+    tapHintHiddenAfterTap,
     hudState,
     consoleErrors,
     pageErrors,
@@ -214,6 +247,8 @@ for (const r of results) {
   console.log(`\n=== ${r.label} ===`);
   console.log('overlay visible at start:', r.overlayVisible);
   console.log('overlay hidden after start:', r.overlayAfterStart);
+  console.log('tap-hint visible after start:', r.tapHintVisibleAfterStart);
+  console.log('tap-hint hidden after first tap:', r.tapHintHiddenAfterTap);
   console.log('hud:', r.hudState);
   console.log('console errors:', r.consoleErrors.length);
   for (const e of r.consoleErrors) console.log('  -', e);

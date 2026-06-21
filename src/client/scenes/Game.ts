@@ -15,6 +15,25 @@ const PLAY_WIDTH = 360;
 const PLATFORM_HEIGHT = 28;
 const FIRST_PLATFORM_Y_RATIO = 0.62;
 const GHOST_FLOOR_RATIO = 0.85;
+// Minimum combo before the HUD pill appears. 2 keeps the surface calm.
+const COMBO_HUD_THRESHOLD = 2;
+// Floor count above which the goal-banner deserves a full-screen celebration.
+const GOAL_BANNER_FLOORS_THRESHOLD = 1;
+
+// Best-effort haptic tap. Silently no-op on devices without vibration support.
+function vibrate(ms: number) {
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate(ms);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function shadowColorForPalette(daily: DailySeed): number {
+  return Phaser.Display.Color.HexStringToColor(PALETTES[daily.paletteId].shadow).color;
+}
 
 type Stack = {
   x: number;
@@ -32,6 +51,7 @@ export class GameScene extends Scene {
   private background!: Phaser.GameObjects.Graphics;
   private platformGraphics!: Phaser.GameObjects.Graphics;
   private particleLayer!: Phaser.GameObjects.Graphics;
+  private windowLayer!: Phaser.GameObjects.Graphics;
 
   private daily!: DailySeed;
   private communityFloors = 0;
@@ -40,6 +60,9 @@ export class GameScene extends Scene {
   private builders = 0;
   private leaderboard: LeaderboardEntry[] = [];
   private username = 'guest';
+  private subredditName = '';
+  private streakAtRisk = false;
+  private goalCelebrated = false;
 
   private stacks: Stack[] = [];
   private currentBlock!: Phaser.GameObjects.Rectangle;
@@ -49,6 +72,8 @@ export class GameScene extends Scene {
   private currentDirection = 1;
   private currentSpeedDeg = 0;
   private currentTween: Phaser.Tweens.Tween | null = null;
+  // Window flicker timer — re-randomises a fraction of lit windows every tick.
+  private windowFlickerEvent: Phaser.Time.TimerEvent | null = null;
 
   private isRunning = false;
   private isStarted = false;
@@ -56,6 +81,8 @@ export class GameScene extends Scene {
   private perfectCount = 0;
   // Consecutive perfect drops within the current run, for escalating feedback.
   private perfectCombo = 0;
+  // Combo HUD timeout — hides the pill after the player misses or idles.
+  private comboHideTimer: number | null = null;
 
   constructor() {
     super('Game');
@@ -75,13 +102,99 @@ export class GameScene extends Scene {
     this.particleLayer = this.add.graphics();
     this.particleLayer.setDepth(20);
 
+    this.windowLayer = this.add.graphics();
+    this.windowLayer.setDepth(2);
+
     this.scale.on('resize', this.handleResize, this);
     this.handleResize(this.scale.width, this.scale.height);
 
     this.setupMuteButton();
+    this.setupSubredditPill();
+    this.setupComboBanner();
 
     // Wait for /api/init before showing the start overlay so HUD reflects real state.
     void this.bootstrap();
+  }
+
+  private setupSubredditPill() {
+    const el = document.getElementById('subreddit-name');
+    if (!el) return;
+    try {
+      // Devvit webview injects context globally; read lazily so we don't depend
+      // on the bundle ordering.
+      const ctx = (globalThis as { devvit?: { subredditName?: string } }).devvit;
+      const name = ctx?.subredditName;
+      if (name) {
+        this.subredditName = name;
+        el.textContent = name;
+        return;
+      }
+    } catch {
+      // ignore
+    }
+    el.textContent = 'skyline';
+  }
+
+  private setupComboBanner() {
+    // Nothing to do — the banner element already exists. We just make sure
+    // it starts hidden. (It's hidden by default in HTML.)
+    const banner = document.getElementById('combo-banner');
+    if (banner) banner.classList.remove('is-visible');
+  }
+
+  private showCombo() {
+    if (this.perfectCombo < COMBO_HUD_THRESHOLD) {
+      // Hide it if it was visible from a previous combo.
+      this.hideCombo();
+      return;
+    }
+    const banner = document.getElementById('combo-banner');
+    const valEl = document.getElementById('combo-value');
+    if (!banner || !valEl) return;
+    valEl.textContent = `x${this.perfectCombo}`;
+    banner.classList.add('is-visible');
+    // Re-trigger the bump animation each time the combo ticks up.
+    banner.classList.remove('is-bump');
+    void banner.offsetWidth;
+    banner.classList.add('is-bump');
+    if (this.comboHideTimer !== null) {
+      window.clearTimeout(this.comboHideTimer);
+    }
+    this.comboHideTimer = window.setTimeout(() => this.hideCombo(), 1200);
+  }
+
+  private hideCombo() {
+    const banner = document.getElementById('combo-banner');
+    banner?.classList.remove('is-visible');
+    if (this.comboHideTimer !== null) {
+      window.clearTimeout(this.comboHideTimer);
+      this.comboHideTimer = null;
+    }
+  }
+
+  private showTapHint() {
+    const hint = document.getElementById('tap-hint');
+    if (hint) hint.hidden = false;
+  }
+
+  private hideTapHint() {
+    const hint = document.getElementById('tap-hint');
+    if (hint) hint.hidden = true;
+  }
+
+  private showGoalBanner() {
+    const banner = document.getElementById('goal-banner');
+    if (!banner) return;
+    banner.hidden = false;
+    window.setTimeout(() => {
+      banner.hidden = true;
+    }, 3200);
+  }
+
+  private updateStreakWarning() {
+    const warn = document.getElementById('streak-warning');
+    if (!warn) return;
+    warn.hidden = !this.streakAtRisk;
   }
 
   private setupMuteButton() {
@@ -121,10 +234,15 @@ export class GameScene extends Scene {
     this.builders = init.builders;
     this.leaderboard = init.leaderboard;
     this.username = init.username;
+    // Server can hint when a streak is "at risk" — set by /api/init so the
+    // overlay and HUD can nudge the player back.
+    this.streakAtRisk = init.streakAtRisk ?? false;
 
     this.paintBackground();
     this.seedGhostFloors();
+    this.startWindowFlicker();
     this.updateHud();
+    this.updateStreakWarning();
     const remaining = Math.max(0, this.daily.communityGoal - this.communityFloors);
     const base =
       remaining > 0
@@ -226,13 +344,43 @@ export class GameScene extends Scene {
     }
   }
 
+  // Periodically redraws a subset of the windows so they flicker on/off.
+  // Cheap: only re-randomises the *pattern*, never the geometry.
+  private startWindowFlicker() {
+    if (this.windowFlickerEvent) {
+      this.windowFlickerEvent.remove();
+      this.windowFlickerEvent = null;
+    }
+    // Re-randomise the window flicker pattern ~6 times per second.
+    this.windowFlickerEvent = this.time.addEvent({
+      delay: 160,
+      loop: true,
+      callback: () => this.redrawWindows(),
+    });
+  }
+
+  private redrawWindows() {
+    if (!this.daily || this.stacks.length === 0) return;
+    const palette = PALETTES[this.daily.paletteId];
+    const windowCol = Phaser.Display.Color.HexStringToColor(palette.mid).color;
+    const g = this.windowLayer;
+    g.clear();
+    for (const s of this.stacks) {
+      if (s.isGhost) continue;
+      const left = s.x - s.width / 2;
+      const topY = s.y - PLATFORM_HEIGHT / 2;
+      this.drawWindows(g, left, topY, s.width, false, windowCol, true);
+    }
+  }
+
   private drawWindows(
     g: Phaser.GameObjects.Graphics,
     left: number,
     topY: number,
     width: number,
     isGhost: boolean,
-    windowCol: number
+    windowCol: number,
+    flicker = false
   ) {
     const winW = 6;
     const winH = 8;
@@ -244,9 +392,11 @@ export class GameScene extends Scene {
     const inset = (width - (count * stride - gap)) / 2;
     const winY = topY + (PLATFORM_HEIGHT - winH) / 2;
     for (let i = 0; i < count; i++) {
-      // Deterministic-ish "lit" pattern so it shimmers without re-randomising
-      // every redraw: every third window is dark.
-      const lit = i % 3 !== 1;
+      // Deterministic "lit" pattern so the stack looks the same on first draw,
+      // and a flicker variant that re-randomises on every window-flicker tick.
+      const lit = flicker
+        ? Math.random() > 0.42
+        : i % 3 !== 1;
       const alpha = isGhost ? 0.18 : lit ? 0.85 : 0.25;
       g.fillStyle(windowCol, alpha);
       g.fillRect(left + inset + i * stride, winY, winW, winH);
@@ -260,8 +410,10 @@ export class GameScene extends Scene {
     this.perfectRun = true;
     this.perfectCount = 0;
     this.perfectCombo = 0;
+    this.goalCelebrated = false;
     audio.resume();
     this.hideOverlay();
+    this.showTapHint();
     // Spawn the very first moving block (its base is the top of the starting stack).
     const top = this.stacks[this.stacks.length - 1]!;
     this.spawnMovingBlock(top.y - PLATFORM_HEIGHT, top.width, 0);
@@ -274,8 +426,12 @@ export class GameScene extends Scene {
     this.perfectRun = true;
     this.perfectCount = 0;
     this.perfectCombo = 0;
+    this.goalCelebrated = false;
     this.stacks = [];
     this.particleLayer.clear();
+    this.windowLayer.clear();
+    this.hideTapHint();
+    this.hideCombo();
     if (this.currentTween) {
       this.currentTween.stop();
       this.currentTween = null;
@@ -284,10 +440,12 @@ export class GameScene extends Scene {
     if (this.currentShadow) this.currentShadow.destroy();
     this.camera.scrollY = 0;
     this.seedGhostFloors();
+    this.updateHud();
     this.showOverlay({
       title: 'Ready again?',
       sub: 'Stack blocks to add to today’s sub skyline.',
       button: 'STACK',
+      leaderboardHtml: this.leaderboardHtml(),
     });
   }
 
@@ -383,17 +541,21 @@ export class GameScene extends Scene {
       this.perfectCount += 1;
       this.perfectCombo += 1;
       audio.perfect(this.perfectCombo);
+      vibrate(12);
       // Feedback escalates with the combo so a hot streak feels louder.
       const intensity = Math.min(this.perfectCombo, 6);
       this.burstParticles(newX, newY, '#ffd166', 14 + intensity * 3);
       this.flashScreen('#ffd166', 0.1 + intensity * 0.015);
       // Grow the next block slightly to make perfect stacks feel rewarding.
       this.currentWidth = Math.min(this.currentWidth + 6, PLAY_WIDTH);
+      this.showCombo();
     } else {
       this.perfectRun = false;
       this.perfectCombo = 0;
       audio.drop();
+      vibrate(8);
       this.burstParticles(blockX, blockY, '#ef476f', 6);
+      this.hideCombo();
     }
 
     this.stacks.push({
@@ -403,6 +565,26 @@ export class GameScene extends Scene {
       depth: this.currentDepth + 1,
       color: blockColor,
       isGhost: false,
+    });
+
+    // Squash/stretch the dropped block as it lands. The block briefly squashes
+    // vertically and bulges horizontally so every stack has a satisfying thump.
+    // We also briefly tint it with the accent so the player reads the impact.
+    this.currentBlock.setFillStyle(0xffd166, 1);
+    this.currentBlock.setStrokeStyle(2, shadowColorForPalette(this.daily), 0.6);
+    this.tweens.add({
+      targets: this.currentBlock,
+      scaleY: { from: 0.55, to: 1 },
+      scaleX: { from: 1.18, to: 1 },
+      duration: 220,
+      ease: 'Cubic.easeOut',
+      onComplete: () => {
+        // Restore the canonical block color before drawing into the stack.
+        this.currentBlock.setFillStyle(
+          Phaser.Display.Color.HexStringToColor(PALETTES[this.daily.paletteId].block).color,
+          1
+        );
+      },
     });
 
     // Trim the dropped moving block to its placed width, then animate it into place.
@@ -437,6 +619,8 @@ export class GameScene extends Scene {
 
   private miss(blockX: number, blockY: number) {
     this.isRunning = false;
+    this.hideTapHint();
+    this.hideCombo();
     const palette = PALETTES[this.daily.paletteId];
     const blockColor = Phaser.Display.Color.HexStringToColor(palette.block).color;
     // Save the dropped block, color it red, and animate it falling.
@@ -446,6 +630,7 @@ export class GameScene extends Scene {
     }
     if (this.currentShadow) this.currentShadow.destroy();
     audio.miss();
+    vibrate(28);
     this.cameras.main.shake(220, 0.012);
     this.burstParticles(blockX, blockY, '#ef476f', 14);
     this.flashScreen('#ef476f', 0.18);
@@ -493,8 +678,54 @@ export class GameScene extends Scene {
     this.builders = data.builders;
     this.leaderboard = data.leaderboard;
     this.updateHud();
-    if (data.goalReached) audio.goal();
+    if (data.goalReached && !this.goalCelebrated) {
+      this.goalCelebrated = true;
+      audio.goal();
+      vibrate(45);
+      this.showGoalBanner();
+      this.celebrationBurst();
+    }
     this.endRun(data);
+  }
+
+  // Goal-reached celebration: a confetti burst of golden particles raining
+  // across the whole canvas. Cheap to render (12 rectangles via tween).
+  private celebrationBurst() {
+    const { width, height } = this.scale;
+    const palette = PALETTES[this.daily.paletteId];
+    const colors = [
+      palette.block,
+      '#ffd166',
+      '#ef476f',
+      '#06d6a0',
+      palette.mid,
+    ];
+    for (let i = 0; i < 40; i++) {
+      const color = Phaser.Display.Color.HexStringToColor(
+        colors[i % colors.length]!
+      ).color;
+      const r = this.add.rectangle(
+        Math.random() * width,
+        -20,
+        6,
+        10,
+        color,
+        1
+      ) as Particle;
+      r.setScrollFactor(0);
+      r.setDepth(40);
+      r.setRotation(Math.random() * Math.PI);
+      this.tweens.add({
+        targets: r,
+        y: height + 40,
+        x: r.x + (Math.random() - 0.5) * 80,
+        angle: r.angle + (Math.random() - 0.5) * 8,
+        duration: 1400 + Math.random() * 800,
+        delay: Math.random() * 400,
+        ease: 'Cubic.easeIn',
+        onComplete: () => r.destroy(),
+      });
+    }
   }
 
   private endRun(data: SubmitResponse) {

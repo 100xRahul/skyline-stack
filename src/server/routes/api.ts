@@ -92,6 +92,12 @@ api.get('/init', async (c) => {
     const pbRaw = await redis.get(personalKey(date, username));
     const personalBest = pbRaw ? parseInt(pbRaw, 10) : 0;
     const streak = await readStreak(username);
+    // Streak is at risk if the player has an active streak and yesterday is
+    // the most recent day they played — i.e. the streak expires at UTC midnight.
+    const streakData = await redis.hGetAll(streakKey(username));
+    const lastDay = streakData?.last;
+    const streakAtRisk =
+      !!lastDay && lastDay === yesterdayUtc() && streak > 0;
     const builders = await redis.zCard(buildersKey(date));
     const leaderboard = await readLeaderboard(date, 10);
 
@@ -105,6 +111,7 @@ api.get('/init', async (c) => {
       streak,
       builders,
       leaderboard,
+      streakAtRisk,
     });
   } catch (err) {
     console.error('init failed', err);

@@ -44,6 +44,8 @@ export type InitResponse = {
   builders: number;
   // Today's top contributors (highest floors first).
   leaderboard: LeaderboardEntry[];
+  // True if the player has a streak that needs playing today to keep alive.
+  streakAtRisk: boolean;
 };
 
 export type SubmitResponse = {

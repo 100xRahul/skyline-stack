@@ -16,6 +16,9 @@
       <div id="game-container"></div>
       <div id="hud">
         <div id="hud-top">
+          <div id="subreddit-pill" aria-label="Subreddit">
+            <span class="pill-label">r/</span><span id="subreddit-name">…</span>
+          </div>
           <div id="score-pill" aria-label="Personal score">
             <span class="pill-label">YOU</span>
             <span id="score-value">0</span>
@@ -36,6 +39,19 @@
         </div>
         <div id="progress-track">
           <div id="progress-fill"></div>
+        </div>
+        <div id="combo-banner" class="combo-banner" aria-live="polite">
+          <span id="combo-value">x2</span>
+          <span class="combo-label">combo</span>
+        </div>
+        <div id="streak-warning" class="streak-warning" hidden>
+          <span>🔥</span>
+          <span>Streak at risk — play today to keep it</span>
+        </div>
+        <div id="tap-hint" class="tap-hint" hidden>TAP TO DROP</div>
+        <div id="goal-banner" class="goal-banner" hidden>
+          <div class="goal-banner-title">SUB GOAL REACHED</div>
+          <div class="goal-banner-sub">Every floor added today made this happen</div>
         </div>
       </div>
       <div id="overlay">
