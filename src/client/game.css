@@ -75,7 +75,8 @@ body {
 #community-pill,
 #streak-pill,
 #subreddit-pill,
-#next-claim-pill {
+#next-claim-pill,
+#presence-pill {
   background: var(--pill-bg);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -174,6 +175,46 @@ body {
   border-radius: 999px;
   overflow: hidden;
   box-shadow: var(--shadow);
+}
+
+/* Tower-integrity meter: how wide the shared tower's top still is. Gold and
+   full when healthy; drains and turns red as the sub erodes the tower. A
+   perfect run visibly refills it — the core hand-to-hand mechanic on screen. */
+#tower-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: -4px;
+}
+
+.tower-row-label {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  opacity: 0.75;
+  color: var(--pill-text, #fff);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+#tower-track {
+  flex: 1;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+#tower-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ffd166, #f4a259);
+  transition: width 0.45s ease, background 0.3s ease;
+}
+
+#tower-fill.is-thin {
+  background: linear-gradient(90deg, #ef476f, #d62839);
 }
 
 /* Combo banner appears mid-screen when the player chains perfects. */
@@ -398,6 +439,9 @@ body {
   border-radius: 20px;
   padding: 28px 24px;
   width: min(380px, 92vw);
+  max-height: calc(100dvh - max(env(safe-area-inset-top, 0px), 0px) - max(env(safe-area-inset-bottom, 0px), 0px) - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
   display: flex;
   flex-direction: column;
@@ -426,6 +470,9 @@ body {
 
 #overlay-button {
   margin-top: 8px;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   background: var(--accent);
   color: #1a1a2e;
   border: none;
@@ -439,6 +486,45 @@ body {
   transition: transform 0.05s ease, box-shadow 0.05s ease;
   pointer-events: auto;
   min-width: 180px;
+}
+
+.overlay-tutorial {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  padding: 4px 0 2px;
+}
+
+.overlay-tutorial-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-align: left;
+}
+
+.overlay-tutorial-step span {
+  flex: 0 0 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ffd166, #ef476f);
+  color: #1a1a2e;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.overlay-tutorial-step b {
+  color: #ffd166;
 }
 
 #overlay-button:active {
@@ -843,6 +929,7 @@ body {
   #score-pill,
   #community-pill,
   #next-claim-pill,
+  #presence-pill,
   #streak-pill {
     padding: 5px 9px;
     font-size: 13px;
@@ -858,4 +945,80 @@ body {
   #next-claim-pill {
     display: none !important;
   }
+}
+
+/* Live presence pill: a soft green "alive" tint with a slow pulse so it reads
+   as "people are here right now", distinct from the gold target/identity pills. */
+#presence-pill {
+  background: rgba(6, 214, 160, 0.18);
+  border: 1px solid rgba(6, 214, 160, 0.4);
+  animation: presence-pulse 2.2s ease-in-out infinite;
+}
+#presence-pill .pill-label {
+  opacity: 1;
+  font-size: 12px;
+}
+#presence-value {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+@keyframes presence-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(6, 214, 160, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(6, 214, 160, 0.14); }
+}
+
+/* Live feed: chips that pop bottom-left when another builder in the sub stacks
+   a run. Sits above the overlay (z-index 10) so it's visible even on the start
+   screen — the sub is visibly building while you read the card. */
+.live-feed-layer {
+  position: absolute;
+  left: 12px;
+  bottom: max(env(safe-area-inset-bottom, 0px), 14px);
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-start;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 40;
+}
+.live-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(12, 16, 34, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  white-space: nowrap;
+  max-width: 70vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateX(-130%);
+  animation: live-chip-in 280ms cubic-bezier(0.2, 0.9, 0.3, 1.2) forwards;
+}
+.live-chip.is-perfect {
+  border-color: rgba(255, 209, 102, 0.6);
+  background: linear-gradient(135deg, rgba(40, 28, 12, 0.92), rgba(60, 40, 10, 0.92));
+}
+.live-chip .live-text b {
+  color: #06d6a0;
+  font-weight: 800;
+}
+.live-chip.is-perfect .live-text b {
+  color: #ffd166;
+}
+.live-chip.is-leaving {
+  animation: live-chip-out 280ms ease-in forwards;
+}
+@keyframes live-chip-in {
+  to { transform: translateX(0); }
+}
+@keyframes live-chip-out {
+  to { transform: translateX(-130%); opacity: 0; }
 }

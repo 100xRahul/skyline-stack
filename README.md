@@ -17,19 +17,22 @@ A run takes 20–60 seconds. Perfect stacks (zero overhang) trigger a gold burst
 ## Why it has a hook
 
 - **One-sentence hook**: every player in the sub builds one shared tower, hand to hand — you continue from exactly where the last builder left it, and together you reach the goal.
-- **One shared physical tower**: the sub narrows a single tower across the day. Your run's starting block width is the width the sub's tower currently sits at — so an early builder hands a wide tower to the next player, and a late builder inherits a thin one the whole sub has been whittling down. Your contribution literally changes the next player's session, not just a counter. The narrowing is computed server-side from floors added (never trusted from the client), clamped to a playable minimum, and reset daily.
+- **One shared physical tower**: the sub reshapes a single tower across the day. Your run's starting block width is whatever the sub's tower currently sits at — ordinary runs erode it toward a razor-thin minimum, and a **perfect run repairs it**, widening the top back out for everyone. Sloppy play hands the next builder a harder game; clean play is a gift to the sub. The ghost tower renders the day's *real* width history, so every post is a community-carved silhouette — pinched where the sub fumbled, swelling where someone went flawless. A TOWER integrity meter in the HUD and a "u/X handed it to you 4m ago" line keep the hand-to-hand story visible even for the first builder of the morning. All reshaping is computed server-side from accepted floors (never trusted from the client), clamped to a playable range, capped per run in both directions, and reset daily.
+- **Live, in real time**: every run is broadcast on the post's Devvit realtime channel, so everyone else in the post watches the shared bar tick, the tower erode or get repaired, and a "u/name +N" chip pop in a live feed — plus a "👥 N building now" presence pill. Two redditors on the same post build it together at the same moment. The client is receive-only and the path is best-effort, so it never affects a run.
 - **Daily reset**: the seed (palette, swing speed, goal) is locked for the UTC day, so everyone in the sub gets the same challenge.
 - **Visible community progress**: the inline post card *and* the in-game HUD show a live bar toward today's floor goal, plus how many builders have contributed. You are not just chasing a personal best — you are helping the sub's skyline.
 - **Today's builders board**: the end-of-run overlay (and the start overlay) shows the day's top contributors, with you highlighted and perfect runs starred.
-- **Constrained contribution**: every run contributes `(username, floors, perfect)` to Redis. No free-form text, no abusive inputs.
+- **Milestone floor tags**: the first player to cross each 5-floor milestone claims it and can tag it with a curated label such as Apex, Beacon, or Rally. The label renders on the shared tower for the sub.
+- **Constrained contribution**: every run contributes `(username, floors, perfect)` plus optional curated floor tags. There is no arbitrary free-form text surface.
 
 ## Why it is Reddit-native
 
-- Shared post state — every player in the same post shares one skyline.
+- Shared post state — every player in the same post shares one skyline, with Redis keys scoped by post id so different posts/subreddits do not leak into each other.
 - Subreddit-scoped leaderboard (`/api/leaderboard`).
 - No external client requests. The Phaser client only talks to `/api/*` on the Devvit server. The server is the only thing that touches Reddit's APIs.
 - `requestExpandedMode(e, 'game')` from the splash, so the game plays inside the Reddit webview.
 - No login, no posting, no commenting, no voting required. Players contribute just by playing.
+- Moderator-only post action clears today's visible floor tags if the contribution surface ever needs removal.
 
 ## Retention mechanic
 
@@ -37,17 +40,19 @@ A run takes 20–60 seconds. Perfect stacks (zero overhang) trigger a gold burst
 - Streak counter computed server-side: consecutive UTC days with a stacked floor increment it; skipping a day resets it to 1. The count is derived from the stored last-play date, so it can't be spoofed by the client.
 - Daily personal best, so the leaderboard stays fair.
 - Daily community goal — when the bar fills, tomorrow's palette unlocks.
+- Lifetime achievements for first stack, perfect-run mastery, 7-day streak, and 50 lifetime floors.
 
 ## User contribution mechanic
 
-Every run submits `(username, floors, perfect)` to Redis. Each player is one entry in a per-day sorted set (`skyline:<UTC-date>:builders`) scored by their best floors for the day, so the board dedupes by user. The top 10 are returned in the init/submit responses (and via `/api/leaderboard`) and surfaced on the start and end overlays, with the current user highlighted and perfect runs starred. All daily keys carry a 36h Redis TTL, so contributions are genuinely short-lived; data is numeric and reportable via standard Devvit moderation.
+Every run submits `(username, floors, perfect)` to Redis with a short-lived server-issued run token. The server caps implausible floor counts before they affect the shared tower, leaderboard, achievements, or goal. Each player is one entry in a per-post, per-day sorted set scored by their best floors for the day, so the board dedupes by user. Milestone floors are claimed by the first player to cross them; owners can choose one curated label from a server-approved list, and that label is rendered on the shared tower. The top 10 are returned in the init/submit responses (and via `/api/leaderboard`) and surfaced on the start and end overlays, with the current user highlighted and perfect runs starred. Daily gameplay keys carry a 36h Redis TTL, so community contributions are short-lived; persistent player data is limited to streaks, lifetime counters, and achievements.
 
 ## Tech stack
 
 - Devvit Web (custom post, `splash.html` + `game.html` entrypoints).
 - Phaser 4 for game feel, scenes, tweens, particles, camera.
 - Hono server with `@devvit/web` for `/api/*`, `/internal/menu/*`, and `/internal/triggers/*`.
-- Redis for daily seed state, per-user streaks, and personal bests.
+- Devvit realtime for live, in-the-moment tower updates across every player in a post.
+- Redis for daily seed state, per-user streaks, personal bests, milestone ownership, achievements, and presence.
 - Vite for the client/server build.
 - TypeScript across `src/client`, `src/server`, `src/shared`.
 - Pure CSS for HUD/splash — no Tailwind, no asset CDN.
@@ -70,8 +75,10 @@ npm run lint            # eslint
 
 - Custom post with two entrypoints: `splash.html` (default) and `game.html` (expanded).
 - Server endpoints under `/api/*` (Hono) and `/internal/*` (menu, triggers).
+- `realtime` for live tower broadcasts (server publishes on each submit; client subscribes receive-only).
 - `redis` for state, `reddit.getCurrentUsername()` for attribution.
 - Menu item: moderators can start a fresh skyline post.
+- Moderator post action: clear today's floor tags from a Skyline post.
 - Trigger: `onAppInstall` creates the initial post.
 
 ## Known limitations

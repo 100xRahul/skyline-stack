@@ -1,12 +1,16 @@
 import { Scene } from 'phaser';
 import * as Phaser from 'phaser';
+import { connectRealtime, disconnectRealtime } from '@devvit/web/client';
 import type {
   AchievementState,
   DailySeed,
+  HeartbeatResponse,
   InitResponse,
   LeaderboardEntry,
+  RealtimeMessage,
   SubmitResponse,
 } from '../../shared/api';
+import { FLOOR_NAME_CHOICES, realtimeChannel } from '../../shared/api';
 import {
   PALETTES,
   TOWER_MIN_WIDTH,
@@ -16,6 +20,10 @@ import {
   mulberry32,
 } from '../../shared/seed';
 import { audio } from '../audio';
+
+// How often the client pings /api/heartbeat while the game is open. Comfortably
+// inside the server's 35s "active" window so a session never flickers out.
+const HEARTBEAT_MS = 15_000;
 
 // Width of the play column relative to the game world. The camera stays focused
 // on the stack and pans up as it grows.
@@ -98,6 +106,14 @@ export class GameScene extends Scene {
   // first block starts at this width and their run narrows it for the next
   // builder. Server-authoritative; updated from /api/init and /api/submit.
   private towerWidth = TOWER_START_WIDTH;
+  // Sparse width samples (community floor count -> tower width after that run)
+  // used to draw the shared tower's true carved silhouette. Extended locally by
+  // our own submits and by live broadcasts from other builders.
+  private towerHistory: Record<string, number> = {};
+  // Who reshaped the tower last (drives the "u/X handed you the tower" line).
+  // `at` is a local-clock epoch so the label stays fresh as time passes.
+  private lastBuilder: { username: string; at: number; perfect: boolean } | null =
+    null;
   private personalBest = 0;
   private streak = 0;
   private builders = 0;
@@ -106,6 +122,25 @@ export class GameScene extends Scene {
   private subredditName = '';
   private streakAtRisk = false;
   private goalCelebrated = false;
+
+  // --- Live shared tower (Devvit realtime + presence) ---
+  // Random per-page-load session id. Sent with each run so the server can echo
+  // it in the broadcast and this tab can skip toasting its own run. Also keys
+  // this session in the live presence count.
+  private clientId =
+    Math.random().toString(36).slice(2) + Date.now().toString(36);
+  // The realtime channel for this post, set once init returns the post id.
+  private liveChannel = '';
+  // Recompute-the-overlay-subtitle closure for whichever overlay is currently
+  // waiting (start / retry). Null while running or on a non-live overlay. Lets
+  // a live broadcast refresh the visible copy without rebuilding the overlay.
+  private liveOverlaySub: (() => string) | null = null;
+  private heartbeatTimer: number | null = null;
+  private presenceActive = 0;
+  private runToken = '';
+  // Width change the player's last run applied to the shared tower
+  // (positive = repaired, negative = eroded). Drives the summary row.
+  private lastWidthDelta = 0;
   // Persistent achievement state from the server. We keep a copy so the
   // achievement toast only fires for achievements the player just unlocked.
   private achievements: AchievementState[] = [];
@@ -169,6 +204,12 @@ export class GameScene extends Scene {
     this.setupSubredditPill();
     this.setupComboBanner();
     this.setupVisibilityPause();
+
+    // Tear down realtime + heartbeat on scene shutdown/destroy and on page hide
+    // so we never leak a subscription or an interval.
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.teardownLive, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.teardownLive, this);
+    window.addEventListener('pagehide', () => this.teardownLive());
 
     // Wait for /api/init before showing the start overlay so HUD reflects real state.
     void this.bootstrap();
@@ -362,6 +403,14 @@ export class GameScene extends Scene {
     this.daily = init.daily;
     this.communityFloors = init.communityFloors;
     this.towerWidth = init.towerWidth ?? TOWER_START_WIDTH;
+    this.towerHistory = init.towerHistory ?? {};
+    this.lastBuilder = init.lastBuilder
+      ? {
+          username: init.lastBuilder.username,
+          at: Date.now() - init.lastBuilder.agoMs,
+          perfect: init.lastBuilder.perfect,
+        }
+      : null;
     this.personalBest = init.personalBest;
     this.streak = init.streak;
     this.builders = init.builders;
@@ -370,6 +419,7 @@ export class GameScene extends Scene {
     this.floorOwners = init.floorOwners ?? {};
     this.floorNames = init.floorNames ?? {};
     this.achievements = init.achievements ?? [];
+    this.runToken = init.runToken ?? '';
     // Server can hint when a streak is "at risk" — set by /api/init so the
     // overlay and HUD can nudge the player back.
     this.streakAtRisk = init.streakAtRisk ?? false;
@@ -388,29 +438,39 @@ export class GameScene extends Scene {
     this.updateHud();
     this.updateStreakWarning();
     this.updateNextClaim();
-    const remaining = Math.max(0, this.daily.communityGoal - this.communityFloors);
-    const goalLine =
-      remaining > 0
-        ? `${remaining} floors left to reach today's goal.`
-        : 'Goal reached — keep stacking to push it higher.';
-    const base = `${this.towerLine()} ${goalLine}`;
+    // Subscribe to live tower updates and start announcing our presence. Both
+    // are best-effort; the game is fully playable if realtime is unavailable.
+    this.connectLive(init.postId);
+    this.startHeartbeat();
+    // Compose the start-overlay subtitle from live state so an incoming
+    // broadcast can refresh it in place (the sub builds while you read it).
+    const composeStartSub = (): string => {
+      const remaining = Math.max(
+        0,
+        this.daily.communityGoal - this.communityFloors
+      );
+      const goalLine =
+        remaining > 0
+          ? `${remaining} floors left to reach today's goal.`
+          : 'Goal reached — keep stacking to push it higher.';
+      const handoff = this.handoffLine();
+      const base = `${this.towerLine()}${handoff ? ` ${handoff}` : ''} ${goalLine}`;
+      return this.daily.goalUnlocked
+        ? `The sub hit yesterday's goal, so today's skyline glows. ${base}`
+        : base;
+    };
+    this.liveOverlaySub = composeStartSub;
     const dayName = dailyChallengeName(this.daily.date);
     this.showOverlay({
       title: this.daily.goalUnlocked
         ? `Aurora ${dayName} ✨`
         : dayName,
-      sub: this.daily.goalUnlocked
-        ? `The sub hit yesterday's goal, so today's skyline glows. ${base}`
-        : base,
+      sub: composeStartSub(),
       button: this.isFirstPlay() ? 'SHOW ME' : 'START',
+      summaryHtml: this.isFirstPlay() ? this.tutorialHtml() : undefined,
       leaderboardHtml: this.leaderboardHtml(),
       rivalHtml: this.rivalHtml(),
     });
-    if (this.isFirstPlay()) {
-      // Flag is set when the player actually starts so the tutorial only
-      // shows on the first ever interaction, not on every cold load.
-      this.showTutorialBanner();
-    }
   }
 
   // Short human label for how far the sub has narrowed the shared tower. Drives
@@ -427,10 +487,198 @@ export class GameScene extends Scene {
   }
 
   // One sentence telling the player they share one tower with the sub and what
-  // state the sub has left it in.
+  // state the sub has left it in. When the tower has been whittled down, also
+  // tell them how to fix it — a perfect run repairs the top for everyone.
   private towerLine(): string {
     const verb = this.communityFloors > 0 ? 'continuing' : 'starting';
-    return `You're ${verb} the sub's tower — it's ${this.towerStatus()}.`;
+    const repairHint =
+      this.towerWidth < TOWER_START_WIDTH - 4
+        ? ' A perfect run repairs it.'
+        : '';
+    return `You're ${verb} the sub's tower — it's ${this.towerStatus()}.${repairHint}`;
+  }
+
+  private agoLabel(ms: number): string {
+    if (ms < 60_000) return 'just now';
+    const m = Math.floor(ms / 60_000);
+    if (m < 60) return `${m}m ago`;
+    return `${Math.floor(m / 60)}h ago`;
+  }
+
+  // The hand-to-hand story in one line: who last reshaped the tower and when.
+  // Works even when the player is alone in the post — the previous builder's
+  // mark is still on the tower.
+  private handoffLine(): string {
+    if (!this.lastBuilder) return '';
+    const ago = this.agoLabel(Date.now() - this.lastBuilder.at);
+    if (
+      this.lastBuilder.username.toLowerCase() === this.username.toLowerCase()
+    ) {
+      return `You reshaped it last (${ago}).`;
+    }
+    const name = `u/${this.truncate(this.lastBuilder.username, 16)}`;
+    return this.lastBuilder.perfect
+      ? `${name} repaired it ${ago}.`
+      : `${name} handed it to you ${ago}.`;
+  }
+
+  // Subscribe to the post's realtime channel so every other player's run lands
+  // here live. Receive-only (clients can't publish on Devvit realtime); the
+  // server is the sole broadcaster. Safe outside Devvit — connectRealtime just
+  // posts a subscribe effect to the parent frame, so the smoke test (plain
+  // Chromium) never throws; messages simply never arrive.
+  private connectLive(postId: string | undefined) {
+    if (!postId) return;
+    this.liveChannel = realtimeChannel(postId);
+    try {
+      connectRealtime<RealtimeMessage>({
+        channel: this.liveChannel,
+        onMessage: (msg) => this.onLiveMessage(msg),
+      });
+    } catch {
+      // Realtime unavailable (e.g. running outside the Devvit webview). The
+      // game is fully playable without it — fall back to per-load state.
+      this.liveChannel = '';
+    }
+  }
+
+  // A run landed somewhere else in the sub. Adopt the server-authoritative
+  // snapshot (guarded so out-of-order delivery never rewinds the tower), refresh
+  // the visible surfaces, and toast the builder — unless it's our own echo.
+  private onLiveMessage(msg: RealtimeMessage) {
+    if (!msg || msg.kind !== 'run') return;
+    // communityFloors only ever grows, so it doubles as the sequence guard:
+    // snapshots at or beyond our floor count are fresh enough to adopt the
+    // tower width from (width moves both ways now — erosion and repair — so a
+    // plain monotonic min would swallow repairs).
+    const fresh =
+      typeof msg.communityFloors === 'number' &&
+      msg.communityFloors >= this.communityFloors;
+    if (typeof msg.communityFloors === 'number') {
+      this.communityFloors = Math.max(this.communityFloors, msg.communityFloors);
+    }
+    if (fresh && typeof msg.towerWidth === 'number') {
+      this.towerWidth = msg.towerWidth;
+      if (msg.floors > 0) {
+        // Extend the silhouette history and the handoff line live.
+        this.towerHistory[String(msg.communityFloors)] = msg.towerWidth;
+        this.lastBuilder = {
+          username: msg.user,
+          at: Date.now(),
+          perfect: !!msg.perfect,
+        };
+      }
+    }
+    if (typeof msg.builders === 'number') {
+      this.builders = Math.max(this.builders, msg.builders);
+    }
+    this.updateHud();
+    this.refreshOverlayLiveLine();
+    // The sub hit the goal while this player is here — celebrate once for
+    // everyone in the post, not just whoever's run tipped it over.
+    if (msg.goalReached && !this.goalCelebrated && this.isStarted) {
+      this.goalCelebrated = true;
+      audio.goal();
+      this.showGoalBanner();
+    }
+    // Skip our own broadcast (same session) so we don't toast ourselves; every
+    // other builder — including this same user in another tab — pops a chip.
+    if (msg.from !== this.clientId && msg.floors > 0) {
+      this.showLiveToast(msg.user, msg.floors, !!msg.perfect);
+      // Soft cue when someone else lands a flawless run — the room applauds.
+      if (msg.perfect) audio.neighborPerfect();
+    }
+  }
+
+  // Refresh the subtitle of whichever overlay is currently waiting so the live
+  // tower state shows while the player reads it. No-op if no overlay is up.
+  private refreshOverlayLiveLine() {
+    if (!this.liveOverlaySub) return;
+    const overlay = document.getElementById('overlay');
+    if (!overlay || overlay.classList.contains('overlay-hidden')) return;
+    const subEl = document.getElementById('overlay-sub');
+    if (subEl) subEl.textContent = this.liveOverlaySub();
+  }
+
+  // Pop a small "u/name +N" chip in the live feed when another builder stacks.
+  // Capped and auto-expiring so a busy sub never floods the screen.
+  private showLiveToast(user: string, floors: number, perfect: boolean) {
+    const layer = document.getElementById('live-feed-layer');
+    if (!layer) return;
+    const chip = document.createElement('div');
+    chip.className = `live-chip${perfect ? ' is-perfect' : ''}`;
+    const icon = perfect ? '🎯' : '🧱';
+    const name = this.escapeHtml(this.truncate(user || 'someone', 16));
+    chip.innerHTML =
+      `<span class="live-ico">${icon}</span>` +
+      `<span class="live-text">u/${name} <b>+${floors}</b></span>`;
+    layer.appendChild(chip);
+    // Keep at most a few chips on screen — drop the oldest beyond the cap.
+    while (layer.childElementCount > 4) layer.firstElementChild?.remove();
+    window.setTimeout(() => {
+      chip.classList.add('is-leaving');
+      window.setTimeout(() => chip.remove(), 300);
+    }, 3200);
+  }
+
+  // Begin the presence heartbeat loop: ping immediately, then on an interval.
+  private startHeartbeat() {
+    void this.sendHeartbeat();
+    if (this.heartbeatTimer !== null) return;
+    this.heartbeatTimer = window.setInterval(() => {
+      void this.sendHeartbeat();
+    }, HEARTBEAT_MS);
+  }
+
+  // One presence ping. Best-effort and silent: a failure leaves the pill as-is
+  // rather than surfacing an error.
+  private async sendHeartbeat() {
+    try {
+      const res = await fetch('/api/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: this.clientId }),
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as HeartbeatResponse;
+      if (typeof data.active === 'number') {
+        this.presenceActive = data.active;
+        this.updatePresencePill();
+      }
+    } catch {
+      // Offline or outside Devvit — leave the presence pill untouched.
+    }
+  }
+
+  // Show "👥 N building" only when at least one other session is here, so the
+  // pill is a genuine "others are with you right now" signal, not always-on.
+  private updatePresencePill() {
+    const pill = document.getElementById('presence-pill');
+    const value = document.getElementById('presence-value');
+    if (!pill || !value) return;
+    if (this.presenceActive >= 2) {
+      value.textContent = String(this.presenceActive);
+      pill.hidden = false;
+    } else {
+      pill.hidden = true;
+    }
+  }
+
+  // Stop pinging and drop the realtime subscription. Called on scene shutdown
+  // and on page hide so we don't leak a timer or a dangling listener.
+  private teardownLive() {
+    if (this.heartbeatTimer !== null) {
+      window.clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.liveChannel) {
+      try {
+        disconnectRealtime(this.liveChannel);
+      } catch {
+        // ignore — already gone
+      }
+      this.liveChannel = '';
+    }
   }
 
   // localStorage flag — silent on failures (private mode, quota, etc.).
@@ -448,6 +696,14 @@ export class GameScene extends Scene {
     } catch {
       // ignore
     }
+  }
+
+  private tutorialHtml(): string {
+    return `<div class="overlay-tutorial" aria-label="How to play">
+      <div class="overlay-tutorial-step"><span>1</span><b>Watch</b> the block swing.</div>
+      <div class="overlay-tutorial-step"><span>2</span><b>Tap</b> when it lines up.</div>
+      <div class="overlay-tutorial-step"><span>3</span><b>Repair</b> the sub's tower with perfect drops — sloppy runs erode it.</div>
+    </div>`;
   }
 
   private showTutorialBanner() {
@@ -591,10 +847,16 @@ export class GameScene extends Scene {
     const baseY = this.scale.height * FIRST_PLATFORM_Y_RATIO;
     for (let i = 0; i < ghostCount; i++) {
       const y = baseY + i * PLATFORM_HEIGHT;
+      // Ghost i (0 = top of the ghost tower) is community floor
+      // (communityFloors - i). Its width comes from the day's real width
+      // history, so the silhouette shows the sub's actual hand-to-hand story:
+      // pinched where sloppy runs eroded it, swelling where perfects repaired.
+      const floorNumber = this.communityFloors - i;
+      const { width: gw, offsetX } = this.ghostShapeAt(floorNumber);
       const block: Stack = {
-        x: this.scale.width / 2,
+        x: this.scale.width / 2 + offsetX,
         y,
-        width: PLAY_WIDTH,
+        width: gw,
         depth: -i,
         color: ghostColor,
         isGhost: true,
@@ -624,6 +886,47 @@ export class GameScene extends Scene {
     this.drawPbGhost();
     // Render owner name tags on milestone ghost floors.
     this.drawFloorOwners(ghostCount, baseY);
+  }
+
+  // Width (and a slight lateral drift) of the ghost tower at a given community
+  // floor. Interpolates between the day's real width samples — anchored at the
+  // full start width for floor 0 — so the silhouette is the sub's genuine
+  // carved history, with a small deterministic jitter so it reads hand-built.
+  private ghostShapeAt(floorNumber: number): { width: number; offsetX: number } {
+    const samples = Object.entries(this.towerHistory)
+      .map(([f, w]) => [parseInt(f, 10), w] as [number, number])
+      .filter(([f, w]) => Number.isFinite(f) && f > 0 && Number.isFinite(w))
+      .sort((a, b) => a[0] - b[0]);
+    let loFloor = 0;
+    let loWidth = TOWER_START_WIDTH;
+    let hiFloor: number | null = null;
+    let hiWidth = this.towerWidth;
+    for (const [f, w] of samples) {
+      if (f <= floorNumber) {
+        loFloor = f;
+        loWidth = w;
+      } else {
+        hiFloor = f;
+        hiWidth = w;
+        break;
+      }
+    }
+    let width: number;
+    if (floorNumber <= loFloor || hiFloor === null) {
+      width = loWidth;
+    } else {
+      const t = (floorNumber - loFloor) / (hiFloor - loFloor);
+      width = loWidth + (hiWidth - loWidth) * t;
+    }
+    const rng = mulberry32(
+      hashString(`ghost:${this.daily.date}:${floorNumber}`)
+    );
+    width += (rng() - 0.5) * 14;
+    const offsetX = (rng() - 0.5) * 8;
+    return {
+      width: Phaser.Math.Clamp(width, TOWER_MIN_WIDTH * 0.8, PLAY_WIDTH),
+      offsetX,
+    };
   }
 
   // Tag milestone floors with the redditor who claimed them. Ghost i (0 = top,
@@ -797,6 +1100,8 @@ export class GameScene extends Scene {
     if (this.isStarted) return;
     if (!this.daily) return; // Still loading / errored — nothing to start.
     this.isStarted = true;
+    // Leaving the start overlay — stop live-refreshing its subtitle.
+    this.liveOverlaySub = null;
     this.perfectRun = true;
     this.perfectCount = 0;
     this.perfectCombo = 0;
@@ -840,9 +1145,16 @@ export class GameScene extends Scene {
     this.camera.scrollY = 0;
     this.seedGhostFloors();
     this.updateHud();
+    // The retry overlay's subtitle is the tower + handoff line — keep it live
+    // so the sub reshaping the tower under you shows while you decide.
+    const composeRetrySub = () => {
+      const handoff = this.handoffLine();
+      return `${this.towerLine()}${handoff ? ` ${handoff}` : ''}`;
+    };
+    this.liveOverlaySub = composeRetrySub;
     this.showOverlay({
       title: 'Ready again?',
-      sub: this.towerLine(),
+      sub: composeRetrySub(),
       button: 'STACK',
       leaderboardHtml: this.leaderboardHtml(),
       rivalHtml: this.rivalHtml(),
@@ -908,6 +1220,7 @@ export class GameScene extends Scene {
 
   private handleDrop() {
     if (!this.isRunning) return;
+    this.hideTapHint();
     const blockX = this.currentBlock.x;
     const blockY = this.currentBlock.y;
     const top = this.stacks[this.stacks.length - 1]!;
@@ -1054,9 +1367,11 @@ export class GameScene extends Scene {
   }
 
   private async submitRun(floors: number) {
-    const body: { floors: number; perfect: boolean } = {
+    const body: { floors: number; perfect: boolean; clientId: string; runToken: string } = {
       floors,
       perfect: this.perfectRun && floors > 0,
+      clientId: this.clientId,
+      runToken: this.runToken,
     };
     let data: SubmitResponse;
     try {
@@ -1072,8 +1387,21 @@ export class GameScene extends Scene {
       this.showError('Could not save your run.', () => void this.submitRun(floors));
       return;
     }
+    // How this run reshaped the shared tower (+ = repaired, - = eroded).
+    // Shown in the summary so the hand-to-hand contribution is legible.
+    this.lastWidthDelta = (data.towerWidth ?? this.towerWidth) - this.towerWidth;
     this.communityFloors = data.communityFloors;
     this.towerWidth = data.towerWidth ?? this.towerWidth;
+    // Record our own mark on the tower so the retry ghost silhouette and the
+    // handoff line reflect it without waiting for the next /api/init.
+    if (data.floorsAdded > 0) {
+      this.towerHistory[String(data.communityFloors)] = this.towerWidth;
+      this.lastBuilder = {
+        username: this.username,
+        at: Date.now(),
+        perfect: this.perfectRun && data.floorsAdded > 0,
+      };
+    }
     this.personalBest = data.personalBest;
     this.streak = data.streak;
     this.builders = data.builders;
@@ -1082,6 +1410,7 @@ export class GameScene extends Scene {
     this.floorNames = data.floorNames ?? this.floorNames;
     this.claimedFloors = data.claimedFloors ?? [];
     this.achievements = data.achievements ?? this.achievements;
+    this.runToken = data.nextRunToken ?? this.runToken;
     this.updateHud();
     if (data.goalReached && !this.goalCelebrated) {
       this.goalCelebrated = true;
@@ -1169,6 +1498,9 @@ export class GameScene extends Scene {
   }
 
   private endRun(data: SubmitResponse) {
+    // The end-of-run summary has its own copy; the live HUD + feed carry the
+    // realtime signal here, so stop refreshing the start/retry subtitle.
+    this.liveOverlaySub = null;
     const placedFloors = this.stacks.filter((s) => !s.isGhost).length - 1;
     const beat = data.improvedPb && placedFloors > 0;
     const perfect = this.perfectRun && placedFloors > 0;
@@ -1183,11 +1515,18 @@ export class GameScene extends Scene {
     summaryLines.push(
       `<div class="summary-row"><span class="label">Sub total</span><span class="value">${data.communityFloors} / ${this.daily.communityGoal}</span></div>`
     );
-    // How narrow you left the shared tower for the next builder — makes the
-    // hand-to-hand contribution legible even on a zero-floor run.
+    // How this run reshaped the shared tower for the next builder — repaired
+    // (perfect run) or eroded — so the hand-to-hand contribution is legible.
     if (data.floorsAdded > 0) {
+      const delta = this.lastWidthDelta;
+      const deltaTag =
+        delta > 0
+          ? ` <span style="color:#06d6a0">▲ repaired</span>`
+          : delta < 0
+          ? ` <span style="color:#ef476f">▼ eroded</span>`
+          : '';
       summaryLines.push(
-        `<div class="summary-row"><span class="label">Tower left for sub</span><span class="value">${this.towerStatus()}</span></div>`
+        `<div class="summary-row"><span class="label">Tower left for sub</span><span class="value">${this.towerStatus()}${deltaTag}</span></div>`
       );
     }
     summaryLines.push(
@@ -1203,7 +1542,7 @@ export class GameScene extends Scene {
     if (this.achievements.length > 0) {
       const achHtml = this.achievements
         .map((a) => {
-          const pct = Math.min(100, Math.round((a.progress / Math.max(1, a.goal)) * 100));
+          const pct = Math.min(100, Math.round(a.progress * 100));
           const prog = a.unlocked ? '✓' : `${a.current}/${a.goal}`;
           return `
             <div class="ach-row ${a.unlocked ? 'ach-unlocked' : ''}">
@@ -1224,8 +1563,8 @@ export class GameScene extends Scene {
     }
 
     // If the player owns at least one milestone floor, surface a small
-    // "name a floor" panel. This is the user-contribution surface: the
-    // player picks which floor to name and types a short word. The
+    // "tag a floor" panel. This is the user-contribution surface: the
+    // player picks which floor to tag and chooses a curated label. The
     // resulting label shows on the tower for the rest of the sub to see.
     const nameableFloors = this.collectNameableFloors();
     if (nameableFloors.length > 0) {
@@ -1236,11 +1575,14 @@ export class GameScene extends Scene {
           return `<option value="${f}">${label}</option>`;
         })
         .join('');
+      const labelOptions = FLOOR_NAME_CHOICES.map(
+        (name) => `<option value="${this.escapeHtml(name)}">${this.escapeHtml(name)}</option>`
+      ).join('');
       summaryLines.push(`<div class="summary-block">
-        <div class="summary-block-title">Name a floor you own</div>
+        <div class="summary-block-title">Tag a floor you own</div>
         <div class="name-floor-row">
           <select id="name-floor-pick" class="name-floor-pick">${options}</select>
-          <input id="name-floor-input" class="name-floor-input" type="text" maxlength="12" placeholder="e.g. Apex, ⭐" />
+          <select id="name-floor-label" class="name-floor-input">${labelOptions}</select>
           <button id="name-floor-submit" class="name-floor-submit" type="button">Save</button>
         </div>
         <div id="name-floor-status" class="name-floor-status"></div>
@@ -1254,7 +1596,7 @@ export class GameScene extends Scene {
       <div class="share-title">Share to this post</div>
       <div class="share-buttons">
         <button class="share-btn" data-share="1" type="button">Just my score</button>
-        <button class="share-btn" data-share="2" type="button">Brag</button>
+        <button class="share-btn" data-share="2" type="button">Board flex</button>
         <button class="share-btn" data-share="3" type="button">Rally the sub</button>
       </div>
     </div>`;
@@ -1308,11 +1650,10 @@ export class GameScene extends Scene {
         };
       });
 
-    // Wire the floor-naming panel. The player picks which milestone they
-    // want to name, types a short word, and the server stores it after
+    // Wire the floor-tagging panel. The player picks which milestone they
+    // want to tag and chooses a curated label; the server stores it after
     // confirming the player owns that floor. The updated name shows on
-    // the tower for everyone in the sub. The placeholder nudges tone by
-    // context: a perfect run gets the celebratory hint.
+    // the tower for everyone in the sub.
     this.wireNameFloorPanel(perfect);
   }
 
@@ -1332,18 +1673,19 @@ export class GameScene extends Scene {
 
   private wireNameFloorPanel(perfect: boolean) {
     const btn = document.getElementById('name-floor-submit') as HTMLButtonElement | null;
-    const input = document.getElementById('name-floor-input') as HTMLInputElement | null;
+    const labelSelect = document.getElementById('name-floor-label') as HTMLSelectElement | null;
     const select = document.getElementById('name-floor-pick') as HTMLSelectElement | null;
     const status = document.getElementById('name-floor-status') as HTMLDivElement | null;
-    if (!btn || !input || !select || !status) return;
-    // Contextual placeholder — a perfect run gets the celebratory hint.
-    input.placeholder = perfect ? 'Apex, ⭐, 🏆' : 'e.g. Apex, ⭐';
+    if (!btn || !labelSelect || !select || !status) return;
+    if (perfect && FLOOR_NAME_CHOICES.includes('Crown')) {
+      labelSelect.value = 'Crown';
+    }
     btn.onclick = async (e) => {
       e.stopPropagation();
       const floor = parseInt(select.value, 10);
-      const name = input.value.trim();
+      const name = labelSelect.value;
       if (!Number.isFinite(floor) || floor <= 0 || name.length === 0) {
-        status.textContent = 'Pick a floor and enter a name.';
+        status.textContent = 'Pick a floor and a label.';
         return;
       }
       btn.disabled = true;
@@ -1373,7 +1715,7 @@ export class GameScene extends Scene {
         if (data.nameAccepted) {
           this.floorNames = data.floorNames;
           status.textContent = `Saved — floor ${floor} is now "${name}".`;
-          input.value = '';
+          btn.disabled = false;
           // Re-render the milestone tags so the new name shows on the
           // tower immediately.
           this.refreshFloorOwnerLabels();
@@ -1388,7 +1730,7 @@ export class GameScene extends Scene {
     };
     // Avoid tap-anywhere on the overlay card dismissing the panel.
     btn.addEventListener('pointerdown', (e) => e.stopPropagation());
-    input.addEventListener('pointerdown', (e) => e.stopPropagation());
+    labelSelect.addEventListener('pointerdown', (e) => e.stopPropagation());
     select.addEventListener('pointerdown', (e) => e.stopPropagation());
   }
 
@@ -1474,16 +1816,38 @@ export class GameScene extends Scene {
       const pct = Math.min(100, (this.communityFloors / Math.max(1, this.daily.communityGoal)) * 100);
       fillEl.style.width = `${pct}%`;
     }
+    this.updateTowerMeter();
     this.updateNextClaim();
+  }
+
+  // Tower-integrity meter under the goal bar: how wide the shared tower's top
+  // still is, between the razor-thin minimum and the full start width. Drains
+  // as the sub erodes the tower and visibly refills when someone lands a
+  // perfect run (live, via realtime) — the core hand-to-hand mechanic, always
+  // on screen.
+  private updateTowerMeter() {
+    const fill = document.getElementById('tower-fill');
+    if (!fill) return;
+    const span = TOWER_START_WIDTH - TOWER_MIN_WIDTH;
+    const pct =
+      span > 0
+        ? Phaser.Math.Clamp(
+            ((this.towerWidth - TOWER_MIN_WIDTH) / span) * 100,
+            0,
+            100
+          )
+        : 100;
+    fill.style.width = `${Math.round(pct)}%`;
+    fill.classList.toggle('is-thin', pct < 33);
   }
 
   private showOverlay(opts: {
     title: string;
     sub: string;
     button: string;
-    summaryHtml?: string;
-    leaderboardHtml?: string;
-    rivalHtml?: string;
+    summaryHtml?: string | undefined;
+    leaderboardHtml?: string | undefined;
+    rivalHtml?: string | undefined;
     onButton?: () => void;
   }) {
     const overlay = document.getElementById('overlay');
@@ -1542,6 +1906,7 @@ export class GameScene extends Scene {
   }
 
   private showLoading() {
+    this.liveOverlaySub = null;
     this.showOverlay({
       title: 'Loading…',
       sub: "Fetching today's skyline",
@@ -1553,6 +1918,7 @@ export class GameScene extends Scene {
   }
 
   private showError(message: string, retry: () => void) {
+    this.liveOverlaySub = null;
     this.showOverlay({
       title: 'Something went wrong',
       sub: message,

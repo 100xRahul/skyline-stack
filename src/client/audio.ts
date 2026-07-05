@@ -95,6 +95,13 @@ class AudioEngine {
     this.play({ freq: 200, toFreq: 70, duration: 0.4, type: 'sawtooth', gain: 0.2 });
   }
 
+  // A distant, quiet echo of the perfect chime — another builder in the post
+  // just landed a flawless run. Low gain so it reads as ambience, not an alert.
+  neighborPerfect() {
+    this.play({ freq: 660, duration: 0.09, type: 'sine', gain: 0.05 });
+    this.play({ freq: 990, duration: 0.14, type: 'sine', gain: 0.04 }, 0.07);
+  }
+
   // A celebratory arpeggio when the community hits its daily goal.
   goal() {
     const notes = [523.25, 659.25, 783.99, 1046.5];
