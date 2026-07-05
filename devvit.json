@@ -25,6 +25,14 @@
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/post-create"
+      },
+      {
+        "label": "Clear Skyline floor tags",
+        "description": "Remove today's visible floor labels from this Skyline post",
+        "location": "post",
+        "postFilter": "currentApp",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/clear-floor-tags"
       }
     ]
   },

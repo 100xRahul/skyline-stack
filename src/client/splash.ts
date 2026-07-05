@@ -1,5 +1,9 @@
 import { requestExpandedMode } from '@devvit/web/client';
-import { dailyChallengeName } from '../shared/seed';
+import {
+  TOWER_MIN_WIDTH,
+  TOWER_START_WIDTH,
+  dailyChallengeName,
+} from '../shared/seed';
 import type { InitResponse } from '../shared/api';
 
 const startButton = document.getElementById('start-button') as HTMLButtonElement;
@@ -61,6 +65,32 @@ async function showLiveProgress() {
     communityFloors >= daily.communityGoal
       ? 'Push it higher'
       : "Add to today's stack";
+
+  // The hand-to-hand hook, right on the feed card: how the sub has left the
+  // shared tower and who touched it last. Text only — no free-form input.
+  const towerEl = document.getElementById('live-tower');
+  if (towerEl && typeof init.towerWidth === 'number') {
+    const span = TOWER_START_WIDTH - TOWER_MIN_WIDTH;
+    const pct = span > 0 ? (init.towerWidth - TOWER_MIN_WIDTH) / span : 1;
+    const status =
+      init.towerWidth >= TOWER_START_WIDTH - 4
+        ? 'wide open'
+        : pct > 0.66
+          ? 'still wide'
+          : pct > 0.4
+            ? 'narrowing'
+            : pct > 0.15
+              ? 'getting narrow'
+              : 'razor-thin';
+    const last = init.lastBuilder;
+    const mins = last ? Math.floor(last.agoMs / 60_000) : 0;
+    const ago = !last ? '' : mins < 1 ? 'just now' : mins < 60 ? `${mins}m ago` : `${Math.floor(mins / 60)}h ago`;
+    const lastLine = last
+      ? ` — u/${last.username} ${last.perfect ? 'repaired it' : 'left it'} ${ago}`
+      : '';
+    towerEl.textContent = `Tower is ${status}${lastLine}`;
+    towerEl.hidden = false;
+  }
 
   if (dayNameEl) {
     dayNameEl.textContent = dailyChallengeName(daily.date);

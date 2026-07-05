@@ -262,11 +262,27 @@ body {
   opacity: 0.7;
 }
 
+/* One-line hand-to-hand status: how the sub left the shared tower and who
+   touched it last. The gold tint marks it as the hook, not a stat. */
+.live-tower {
+  margin-top: 6px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #ffd166;
+  opacity: 0.95;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Lifetime achievement summary line shown on the splash to telegraph the
    long-term goal to first-time visitors. */
 .live-achievements {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 10px auto 0;
   padding: 6px 14px;
@@ -276,8 +292,9 @@ body {
   font-size: 0.85rem;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.85);
-  width: max-content;
-  max-width: 100%;
+  width: auto;
+  max-width: min(100%, 320px);
+  text-align: center;
 }
 .live-achievements .la-label {
   font-size: 0.7rem;

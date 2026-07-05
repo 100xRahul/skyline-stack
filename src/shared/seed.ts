@@ -45,32 +45,40 @@ export const DAILY_TTL_SECONDS = 36 * 60 * 60;
 // sub has been whittling down. This is the "hand to hand" community mechanic —
 // your run literally changes the starting width of the next player's run.
 //
-// Narrowing is computed server-side from floors added (never trusted from the
-// client), clamped to TOWER_MIN_WIDTH so the tower always stays playable, and
-// reset with the daily key at UTC midnight. Perfect runs narrow less, so clean
-// play "holds the line" for the rest of the sub.
+// Reshaping is computed server-side from floors added (never trusted from the
+// client), clamped to [TOWER_MIN_WIDTH, TOWER_START_WIDTH] so the tower always
+// stays playable, and reset with the daily key at UTC midnight. Ordinary runs
+// erode the tower; a PERFECT run (every drop zero-overhang) repairs it — the
+// sub's masons widen the top back out. That makes the shared tower a two-way
+// economy: sloppy play hands the next builder a thinner start, clean play
+// hands them a wider one.
 export const TOWER_START_WIDTH = 300;
 export const TOWER_MIN_WIDTH = 150;
-// Pixels the shared tower narrows per floor added: sloppy vs. perfect runs.
+// Pixels the shared tower narrows per floor added by an ordinary run.
 export const TOWER_NARROW_PER_FLOOR = 5;
-export const TOWER_NARROW_PER_FLOOR_PERFECT = 2;
-// Hard cap on how much a single run can narrow the shared tower, so no one run
-// (or script) can slam the whole sub down to the minimum in one go.
+// Pixels a perfect run REPAIRS (widens) per floor.
+export const TOWER_REPAIR_PER_FLOOR = 4;
+// Hard caps on how much a single run can narrow or repair the shared tower, so
+// no one run (or script) can slam the sub to the minimum — or trivialise the
+// day by restoring the full width — in one go.
 export const TOWER_MAX_NARROW_PER_RUN = 30;
+export const TOWER_MAX_REPAIR_PER_RUN = 24;
 
 // Compute the next shared tower width after a run. Pure + deterministic so the
 // server is the single source of truth. `current` is the width before the run,
-// `floors` is floors the run added, `perfect` flags a flawless run.
-export function narrowTower(
+// `floors` is floors the run added, `perfect` flags a flawless run (which
+// repairs the tower instead of eroding it).
+export function reshapeTower(
   current: number,
   floors: number,
   perfect: boolean
 ): number {
   if (floors <= 0) return current;
-  const perFloor = perfect
-    ? TOWER_NARROW_PER_FLOOR_PERFECT
-    : TOWER_NARROW_PER_FLOOR;
-  const drop = Math.min(floors * perFloor, TOWER_MAX_NARROW_PER_RUN);
+  if (perfect) {
+    const gain = Math.min(floors * TOWER_REPAIR_PER_FLOOR, TOWER_MAX_REPAIR_PER_RUN);
+    return Math.min(TOWER_START_WIDTH, current + gain);
+  }
+  const drop = Math.min(floors * TOWER_NARROW_PER_FLOOR, TOWER_MAX_NARROW_PER_RUN);
   return Math.max(TOWER_MIN_WIDTH, current - drop);
 }
 

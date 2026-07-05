@@ -33,6 +33,10 @@
             <span class="pill-label">Next</span>
             <span id="next-claim-value">10</span>
           </div>
+          <div id="presence-pill" aria-label="Players building now" hidden>
+            <span class="pill-label">👥</span>
+            <span id="presence-value">0</span>
+          </div>
           <div id="streak-pill" aria-label="Streak">
             <span class="pill-label">🔥</span>
             <span id="streak-value">0</span>
@@ -43,6 +47,16 @@
         </div>
         <div id="progress-track">
           <div id="progress-fill"></div>
+        </div>
+        <div
+          id="tower-row"
+          aria-label="Shared tower integrity — perfect runs repair it"
+          title="Shared tower width. Sloppy runs erode it, perfect runs repair it."
+        >
+          <span class="tower-row-label">TOWER</span>
+          <div id="tower-track">
+            <div id="tower-fill"></div>
+          </div>
         </div>
         <div id="combo-banner" class="combo-banner" aria-live="polite">
           <span id="combo-value">x2</span>
@@ -68,10 +82,11 @@
           </div>
           <div class="tut-step tut-3">
             <span class="tut-num">3</span>
-            <span class="tut-text">Perfect drops add bonus floors</span>
+            <span class="tut-text">Perfect drops repair the sub's tower</span>
           </div>
         </div>
         <div id="achievement-toast-layer" class="achievement-toast-layer" aria-live="polite"></div>
+        <div id="live-feed-layer" class="live-feed-layer" aria-live="polite"></div>
       </div>
       <div id="overlay">
         <div id="overlay-card">

@@ -25,15 +25,40 @@ export type DailySeed = {
   blockWidth: number;
 };
 
+// Curated milestone-floor labels. This keeps the user-contribution mechanic
+// expressive but bounded: players still choose how to mark a claimed floor,
+// while moderators and judges do not have to reason about arbitrary free text.
+export const FLOOR_NAME_CHOICES = [
+  'Apex',
+  'Beacon',
+  'Bolt',
+  'Crown',
+  'Glow',
+  'Launch',
+  'Rally',
+  'Signal',
+  'Spark',
+  'Vault',
+] as const;
+
 export type ScoreSubmission = {
   // Number of floors the player stacked in their run.
   floors: number;
   // True when every block was placed with zero overhang (a "perfect" run).
   perfect: boolean;
-  // Optional: the player can name a milestone floor they own in this run
+  // Opaque per-page-load session id (random, not a user identifier). Echoed
+  // back in the live broadcast as `from` so the submitting tab can suppress
+  // its own toast while every other player in the post still sees it.
+  clientId?: string;
+  // Server-issued token from /api/init or the previous /api/submit. Required
+  // for positive-floor score submissions so scripts cannot spam arbitrary
+  // scores without first starting a real run window.
+  runToken?: string;
+  // Optional: the player can tag a milestone floor they own in this run
   // (or a milestone floor they already own from a previous run today).
-  // The server sanitises the name and only persists it if the player is
-  // the recorded owner of that floor. Floor + name travel together.
+  // The server only accepts curated FLOOR_NAME_CHOICES and only persists one
+  // if the player is the recorded owner of that floor. Floor + label travel
+  // together.
   nameFloor?: number;
   name?: string;
 };
@@ -48,10 +73,22 @@ export type InitResponse = {
   daily: DailySeed;
   // Total community floors at the moment this player loaded the page.
   communityFloors: number;
-  // Current width of the shared tower's top floor (px). The sub narrows this
-  // one tower across the day; the player's first block inherits this width, so
-  // later builders continue a thinner tower the whole sub has been whittling.
+  // Current width of the shared tower's top floor (px). The sub reshapes this
+  // one tower across the day — ordinary runs erode it, perfect runs repair it —
+  // and the player's first block inherits this width, so every builder
+  // continues the tower exactly as the sub left it.
   towerWidth: number;
+  // Sparse record of the tower's width after each accepted run, keyed by the
+  // community floor count that run ended at. The client interpolates between
+  // samples to draw the shared tower's TRUE carved silhouette — pinched where
+  // sloppy runs eroded it, swelling back where perfect runs repaired it. This
+  // is the day's collaboration made visible.
+  towerHistory: Record<string, number>;
+  // Who last reshaped the tower, how long ago, and whether their run was a
+  // perfect (a repair). Null before the first run of the day. Drives the
+  // "u/X handed you the tower 4m ago" line so the hand-to-hand mechanic is
+  // legible even when the player is alone in the post.
+  lastBuilder: { username: string; agoMs: number; perfect: boolean } | null;
   // Caller's personal best floor count for today's seed.
   personalBest: number;
   // Caller's active streak (consecutive days with at least 1 floor).
@@ -74,6 +111,8 @@ export type InitResponse = {
   // Persistent achievements. Each is a 1-line definition the client renders
   // and a boolean `unlocked`. Progress is for the "almost there" case.
   achievements: AchievementState[];
+  // Token the client must send with its next positive-floor /api/submit.
+  runToken: string;
 };
 
 export type AchievementDef = {
@@ -99,8 +138,8 @@ export type SubmitResponse = {
   communityFloors: number;
   // Floors added to the community by this run.
   floorsAdded: number;
-  // Shared tower width after this run narrowed it. The next builder (and this
-  // player's own retry) inherits this thinner tower.
+  // Shared tower width after this run reshaped it (eroded, or repaired by a
+  // perfect run). The next builder (and this player's own retry) inherits it.
   towerWidth: number;
   // Whether the community reached its daily goal as a result of this run.
   goalReached: boolean;
@@ -130,6 +169,8 @@ export type SubmitResponse = {
   achievements: AchievementState[];
   // Achievement ids unlocked by THIS run. Empty when none.
   newlyUnlocked: string[];
+  // Fresh token for the player's next positive-floor run.
+  nextRunToken: string;
 };
 
 export type LeaderboardEntry = {
@@ -147,4 +188,50 @@ export type LeaderboardResponse = {
 export type ErrorResponse = {
   status: 'error';
   message: string;
+};
+
+// --- Realtime (live shared tower) -----------------------------------------
+//
+// Every player viewing the same post subscribes to one channel. When a run
+// lands, the server broadcasts an authoritative snapshot so everyone else sees
+// the tower grow and narrow live — the collaboration happens in real time, not
+// only on the next reload.
+
+// Devvit realtime channels may contain ONLY letters, numbers, and underscores
+// (connectRealtime throws otherwise). The post id carries a `t3_` style prefix,
+// so we sanitise to be safe. Server and client both derive the channel from
+// this single helper so they always agree.
+export function realtimeChannel(postId: string): string {
+  return `skyline_${postId}`.replace(/[^a-zA-Z0-9_]/g, '_');
+}
+
+// Broadcast when a run is merged. All numbers are server-authoritative
+// snapshots taken AFTER the run was applied, so a receiver can adopt them
+// directly. communityFloors only ever grows, so receivers use it as the
+// sequence guard: a snapshot with fewer floors than what they already hold is
+// stale and its towerWidth (which can move both ways now that perfect runs
+// repair the tower) is ignored.
+export type TowerRunMessage = {
+  kind: 'run';
+  // Submitter's session id (see ScoreSubmission.clientId). Lets the submitting
+  // tab skip toasting its own run; it is not a user identifier.
+  from: string;
+  // Display name of the builder whose run this was.
+  user: string;
+  // Floors that run added to the shared tower.
+  floors: number;
+  perfect: boolean;
+  // Shared tower totals after the run.
+  communityFloors: number;
+  towerWidth: number;
+  builders: number;
+  goalReached: boolean;
+};
+
+export type RealtimeMessage = TowerRunMessage;
+
+// Response to POST /api/heartbeat: how many sessions are actively building this
+// post's tower right now (a live presence count, including the caller).
+export type HeartbeatResponse = {
+  active: number;
 };

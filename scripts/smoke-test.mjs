@@ -27,6 +27,13 @@ function serve() {
   return createServer(async (req, res) => {
     let urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
     if (urlPath === '/') urlPath = '/game.html';
+    if (urlPath === '/favicon.ico') {
+      // Full-headless Chrome requests a favicon (headless shell doesn't);
+      // 204 keeps the console clean without shipping an icon.
+      res.writeHead(204);
+      res.end();
+      return;
+    }
     const filePath = join(DIST, urlPath);
     if (!existsSync(filePath)) {
       res.writeHead(404);
@@ -41,8 +48,24 @@ function serve() {
   });
 }
 
+// Prefer the Playwright-managed Chromium; fall back to an installed Google
+// Chrome / Edge so the smoke test still runs on machines without the
+// downloaded browser bundle.
+async function launchBrowser() {
+  try {
+    return await chromium.launch({ headless: true });
+  } catch {
+    try {
+      // Full Chromium build in new-headless mode (no headless-shell needed).
+      return await chromium.launch({ headless: true, channel: 'chromium' });
+    } catch {
+      return await chromium.launch({ headless: true, channel: 'chrome' });
+    }
+  }
+}
+
 async function runChecks(label, contextOptions) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchBrowser();
   const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
   const consoleErrors = [];
@@ -88,6 +111,8 @@ async function runChecks(label, contextOptions) {
             subredditName: 'SkylineDemo',
             communityFloors: 3,
             towerWidth: 228,
+            towerHistory: { 2: 260, 3: 228 },
+            lastBuilder: { username: 'somebody', agoMs: 240000, perfect: false },
             personalBest: 0,
             streak: 2,
             builders: 4,
@@ -96,6 +121,7 @@ async function runChecks(label, contextOptions) {
             floorOwners: { 5: 'somebody', 10: 'smoketester' },
             floorNames: {},
             achievements: [],
+            runToken: 'smoke-run-token',
             daily: {
               date: '2026-06-21',
               paletteId: 0,
@@ -128,9 +154,17 @@ async function runChecks(label, contextOptions) {
             nameAccepted: false,
             achievements: [],
             newlyUnlocked: [],
+            nextRunToken: 'smoke-next-token',
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
+      }
+      if (path.endsWith('/api/heartbeat')) {
+        // Pretend two other sessions are building so the presence pill shows.
+        return new Response(JSON.stringify({ active: 3 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
       if (path.endsWith('/api/leaderboard')) {
         return new Response(
@@ -178,6 +212,12 @@ async function runChecks(label, contextOptions) {
     subreddit: document.getElementById('subreddit-name')?.textContent,
     nextClaim: document.getElementById('next-claim-value')?.textContent,
     nextClaimHidden: document.getElementById('next-claim-pill')?.hidden,
+    presence: document.getElementById('presence-value')?.textContent,
+    presenceHidden: document.getElementById('presence-pill')?.hidden,
+    // Tower-integrity meter: stub towerWidth=228 between min 150 and start 300
+    // must render a 52% fill.
+    towerFill: document.getElementById('tower-fill')?.style.width,
+    overlaySub: document.getElementById('overlay-sub')?.textContent,
     canvas: !!document.querySelector('#game-container canvas'),
     canvasWidth: document.querySelector('#game-container canvas')?.width,
     canvasHeight: document.querySelector('#game-container canvas')?.height,
@@ -189,6 +229,9 @@ async function runChecks(label, contextOptions) {
       ?.hidden,
     tapHintHidden: document.getElementById('tap-hint')?.hidden,
     goalBannerHidden: document.getElementById('goal-banner')?.hidden,
+    overlayTutorialVisible: !!document.querySelector(
+      '#overlay-summary .overlay-tutorial'
+    ),
   }));
 
   await page.screenshot({ path: `notes/skyline-${label}-start.png`, fullPage: false });
@@ -212,8 +255,6 @@ async function runChecks(label, contextOptions) {
       await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.45);
     }
   }
-  await page.waitForTimeout(500);
-  await page.mouse.click(640, 320);
   await page.waitForTimeout(500);
 
   // After the first tap, the tap-hint should hide and the combo banner should
@@ -268,6 +309,31 @@ for (const r of results) {
   for (const e of r.consoleErrors) console.log('  -', e);
   console.log('page errors:', r.pageErrors.length);
   for (const e of r.pageErrors) console.log('  -', e);
+}
+
+const failures = [];
+for (const r of results) {
+  if (!r.overlayVisible) failures.push(`${r.label}: overlay was not visible at start`);
+  if (!r.overlayAfterStart) failures.push(`${r.label}: overlay did not hide after start`);
+  if (!r.tapHintVisibleAfterStart) failures.push(`${r.label}: tap hint was not visible after start`);
+  if (!r.tapHintHiddenAfterTap) failures.push(`${r.label}: tap hint did not hide after first drop`);
+  if (!r.hudState.canvas) failures.push(`${r.label}: Phaser canvas did not mount`);
+  if (r.hudState.score !== '0') failures.push(`${r.label}: initial score was ${r.hudState.score}`);
+  if (r.hudState.community !== '3') failures.push(`${r.label}: community HUD was ${r.hudState.community}`);
+  if (r.hudState.goal !== '12') failures.push(`${r.label}: goal HUD was ${r.hudState.goal}`);
+  if (r.hudState.subreddit !== 'SkylineDemo') failures.push(`${r.label}: subreddit HUD was ${r.hudState.subreddit}`);
+  if (r.hudState.presence !== '3') failures.push(`${r.label}: presence HUD was ${r.hudState.presence}`);
+  if (r.hudState.towerFill !== '52%') failures.push(`${r.label}: tower meter fill was ${r.hudState.towerFill}, expected 52%`);
+  if (!r.hudState.overlaySub?.includes('u/somebody')) failures.push(`${r.label}: start overlay missing last-builder handoff line (got "${r.hudState.overlaySub}")`);
+  if (!r.hudState.overlayTutorialVisible) failures.push(`${r.label}: first-play tutorial was not visible in overlay`);
+  if (r.consoleErrors.length > 0) failures.push(`${r.label}: ${r.consoleErrors.length} console error(s)`);
+  if (r.pageErrors.length > 0) failures.push(`${r.label}: ${r.pageErrors.length} page error(s)`);
+}
+
+if (failures.length > 0) {
+  console.error('\nSmoke test failed:');
+  for (const failure of failures) console.error(`- ${failure}`);
+  process.exit(1);
 }
 
 const fatal = results.flatMap((r) => r.pageErrors).length > 0;
