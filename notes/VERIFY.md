@@ -109,6 +109,43 @@ Ran the real Devvit loop end to end, not just the Playwright smoke test:
   2026-07-09); approval arrives by email. The app listing page is live at
   `https://developers.reddit.com/apps/skyline-stack`.
 
+## App review feedback (2026-07-09) and fixes
+
+Reddit's app review returned two required changes before approval:
+
+1. **UGC must be reportable/attributable.** The floor-tag feature (a player
+   claims a milestone floor and picks one curated label from
+   `FLOOR_NAME_CHOICES`) rendered only inside the game canvas, with removal
+   only via a custom moderator menu action — no path through Reddit's native
+   report/remove tooling.
+2. **Automated scoring comments must be posted as the user, in reply to a
+   sticky comment on the post.** `/api/share-result` posted a fixed-template
+   comment as the **APP** account, top-level on the post.
+
+Fix: added `getOrCreateStickyComment()` (`src/server/routes/api.ts`), which
+lazily creates one distinguished + stickied "Today's Skyline activity"
+comment per post per day (APP account), then:
+
+- Floor tags now also post a real reply under that sticky comment, authored
+  `runAs: 'USER'` (e.g. `Tagged floor 15 of today's skyline as "Apex".`), so
+  the label has a reportable/actionable home via normal Reddit comment
+  moderation — not just the in-canvas render and our own "clear tags" menu
+  item (which still clears the in-game display).
+- `/api/share-result` now replies to the sticky comment `runAs: 'USER'`
+  instead of posting top-level `runAs: 'APP'`, matching the "generic/
+  automated scoring comment" review requirement (the template has no
+  free-form player commentary).
+- The once-per-day "goal reached" community announcement
+  (`announceGoal()`) is unchanged — it is a community milestone comment
+  from the app account, not an individual scoring comment, so it stays
+  top-level.
+
+Re-ran `npm run type-check`, `npm run lint`, `npm run build`, and
+`node scripts/smoke-test.mjs` after the change: all clean, 0 console/page
+errors on both viewports. The comment-posting paths themselves (sticky
+creation, `runAs: 'USER'` reply) still need a live `npm run dev` playtest to
+confirm end to end, since the smoke test stubs `/api/*`.
+
 ## Known limits of this verification
 
 - `/api/init`, `/api/submit`, `/api/leaderboard`, `/api/share-result`, `/api/heartbeat` are stubbed by the test page. Real Devvit server behavior is exercised only when the user runs `npm run dev` (which calls `devvit playtest` and requires Reddit OAuth).

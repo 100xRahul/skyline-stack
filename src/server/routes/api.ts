@@ -55,6 +55,13 @@ const ownersKey = (postId: string, date: string) =>
 // the milestone tag in the tower for everyone in the sub.
 const floorNamesKey = (postId: string, date: string) =>
   scopedDailyKey(postId, date, 'floor-names');
+// Id of today's sticky "activity" comment on the post (t1_...). Every
+// generic/automated per-run comment (floor tags, score shares) is posted as
+// a reply to this comment, authored as the player, so it is reportable and
+// actionable through Reddit's normal comment tooling instead of living only
+// inside the game canvas.
+const stickyCommentKey = (postId: string, date: string) =>
+  scopedDailyKey(postId, date, 'stickycomment');
 // Sparse width history: hash of communityFloorCount -> tower width after the
 // run that ended at that count. The client interpolates between samples to
 // draw the shared tower's true carved silhouette for the day.
@@ -245,6 +252,43 @@ function sanitiseFloorName(raw: unknown): string | null {
     (choice) => choice.toLowerCase() === cleaned
   );
   return canonical ?? null;
+}
+
+// Returns the id of today's sticky "activity" comment on this post, creating
+// it (as the app account, distinguished + stickied) on first use. Every
+// generic/automated per-run comment we post on a player's behalf (floor tags,
+// score shares) replies to this comment as the player, so the content is
+// reportable and actionable through Reddit's normal comment tooling — not
+// only visible inside the game canvas. Best-effort: returns null on failure
+// so callers can skip the reply instead of failing the run.
+async function getOrCreateStickyComment(
+  postId: `t3_${string}`,
+  date: string
+): Promise<`t1_${string}` | null> {
+  try {
+    const key = stickyCommentKey(postId, date);
+    const existing = await redis.get(key);
+    if (existing) return existing as `t1_${string}`;
+    const comment = await reddit.submitComment({
+      id: postId,
+      text:
+        "📌 Today's Skyline activity. Floor tags and shared scores from " +
+        'players reply here — report or remove any reply the same way you ' +
+        'would any other comment.',
+      runAs: 'APP',
+    });
+    try {
+      await comment.distinguish(true);
+    } catch (e) {
+      console.error('sticky comment distinguish failed', e);
+    }
+    await redis.set(key, comment.id);
+    await redis.expire(key, DAILY_TTL_SECONDS);
+    return comment.id;
+  } catch (e) {
+    console.error('sticky comment creation failed', e);
+    return null;
+  }
 }
 
 // Achievement definitions. The thresholds match the copy in the client UI
@@ -672,6 +716,26 @@ api.post('/submit', async (c) => {
             // a no-op and would leave the names hash immortal.
             await redis.expire(floorNamesKey(postId, date), DAILY_TTL_SECONDS);
             nameAccepted = true;
+            // Floor tags are the game's only free-choice UGC surface (still
+            // curated to FLOOR_NAME_CHOICES). Mirror the tag as a real reply
+            // to today's sticky comment, authored as the player, so it has a
+            // reportable/actionable home via Reddit's normal comment tooling
+            // instead of living only inside the game canvas.
+            try {
+              const sticky = await getOrCreateStickyComment(
+                postId as `t3_${string}`,
+                date
+              );
+              if (sticky) {
+                await reddit.submitComment({
+                  id: sticky,
+                  text: `Tagged floor ${requestedNameFloor} of today's skyline as "${clean}".`,
+                  runAs: 'USER',
+                });
+              }
+            } catch (e) {
+              console.error('floor-tag comment failed', e);
+            }
           }
         } catch (e) {
           console.error('floor-name write failed', e);
@@ -941,9 +1005,14 @@ api.post('/share-result', async (c) => {
     const day = dailyChallengeName(date);
     const text = SHARE_TEMPLATES[templateIdx]!(floors, day);
 
-    // Post the comment on the current post as the app account. This is a
-    // user-initiated share, so it's safe to publish.
-    await reddit.submitComment({ id: postId, text, runAs: 'APP' });
+    // This is a generic/automated score-share comment (fixed template, no
+    // free-form player commentary), so it is posted as the player, in reply
+    // to today's sticky activity comment rather than top-level on the post.
+    const sticky = await getOrCreateStickyComment(postId, date);
+    if (!sticky) {
+      return c.json({ ok: false, error: 'share failed' }, 500);
+    }
+    await reddit.submitComment({ id: sticky, text, runAs: 'USER' });
     return c.json({ ok: true, posted: text }, 200);
   } catch (err) {
     console.error('share-result failed', err);
