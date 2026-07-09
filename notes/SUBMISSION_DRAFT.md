@@ -113,8 +113,17 @@ Positive-floor runs must include a short-lived server-issued run token from `/ap
 
 ## Demo post
 
-Link TBD — to be created in a public subreddit under 200 members.
+Link TBD — pending Reddit app review (submitted as version 0.0.3 on
+skyline-stack, which creates custom posts and therefore requires manual
+review before it can be installed publicly). Once approved, install on a
+public subreddit under 200 members, play a few runs (including at least
+one perfect run so the tower-repair mechanic is visible), and drop the
+post URL here.
 
 ## App listing
 
-Link TBD — to be created via the Devvit developer portal.
+https://developers.reddit.com/apps/skyline-stack
+
+Current status: version 0.0.3 submitted for review (2026-07-09). Awaiting
+Reddit approval email before the app can be installed outside the
+dev playtest subreddit.
