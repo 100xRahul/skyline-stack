@@ -1,6 +1,6 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
-  "name": "skyline-subreddit-stack",
+  "name": "skyline-stack",
   "post": {
     "dir": "dist/client",
     "entrypoints": {
@@ -45,5 +45,8 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch"
+  },
+  "dev": {
+    "subreddit": "skyline_stack_dev"
   }
 }

@@ -81,6 +81,34 @@ stubbed via `page.addInitScript` so the bundle's `requestExpandedMode` and
 - `npm run lint` — clean.
 - `npm run harness:check` — clean.
 
+## Live Devvit verification (2026-07-09)
+
+Ran the real Devvit loop end to end, not just the Playwright smoke test:
+
+- `devvit login` — authenticated as `Upper_Star_5257`.
+- Renamed the app id from `skyline-subreddit-stack` to `skyline-stack` in
+  `devvit.json` (Devvit app names have a 16-character max; the display
+  title everywhere else is unaffected).
+- `devvit upload` — registered the app on Reddit's platform for the first
+  time (required before any playtest can run under a new app name).
+- `npm run dev` (`devvit playtest`) — created a live dev subreddit
+  `r/skyline_stack_dev` and installed the app. Confirmed in a real Reddit
+  webview: splash card renders, expand into the full game works, runs
+  submit and persist across reloads, the HUD reflects real server state.
+- Hit Reddit's platform-level comment rate limit
+  (`RatelimitError(TimeString="5 seconds")`) on `/api/share-result` during
+  rapid manual test-clicking. Confirmed this is handled gracefully: the
+  server's try/catch already returns a clean `500` instead of crashing,
+  and the client already shows "Try again" on the share button instead of
+  hanging. Not a bug in the app logic — Reddit's own comment rate limit is
+  stricter than our in-app 6/min limiter and only surfaces under
+  unrealistically fast repeated manual testing.
+- `npm run launch` (`devvit upload` + `devvit publish`) — published version
+  `0.0.3`. Reddit requires manual review for apps that create custom
+  posts, so the app is currently **pending review** (submitted
+  2026-07-09); approval arrives by email. The app listing page is live at
+  `https://developers.reddit.com/apps/skyline-stack`.
+
 ## Known limits of this verification
 
 - `/api/init`, `/api/submit`, `/api/leaderboard`, `/api/share-result`, `/api/heartbeat` are stubbed by the test page. Real Devvit server behavior is exercised only when the user runs `npm run dev` (which calls `devvit playtest` and requires Reddit OAuth).
