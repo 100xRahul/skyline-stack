@@ -62,7 +62,9 @@ A run is 20–60 seconds. Perfect stacks (zero overhang) trigger a gold burst an
 
 ## User contribution mechanic
 
-Every run submits `(username, floors, perfect)` to Redis under the daily Skyline keys. The top 10 (by floors) are returned by `/api/leaderboard`. Daily run contributions are short-lived (36h TTL, by key naming), numeric, and reportable via standard Devvit moderation. The `/api/share-result` endpoint lets the player post a fixed-template share comment with no free-form text. The named-floor surface is curated: a player can choose one server-approved label for a milestone floor they own, so the sub still sees player contribution without opening an abuse-prone text box.
+Every run submits `(username, floors, perfect)` to Redis under the daily Skyline keys. The top 10 (by floors) are returned by `/api/leaderboard`. Daily run contributions are short-lived (36h TTL, by key naming), numeric, and reportable via standard Devvit moderation. The named-floor surface is curated: a player can choose one server-approved label for a milestone floor they own, so the sub still sees player contribution without opening an abuse-prone text box.
+
+Both the floor-tag pick and the `/api/share-result` share comment are mirrored as real Reddit comments authored by the player (`runAs: 'USER'`), posted as a reply to one distinguished + stickied "Today's Skyline activity" comment per post per day. This gives every piece of in-app UGC a reportable, actionable home through Reddit's normal comment moderation (report/remove), not just a custom in-app control, and keeps generic/automated per-run comments off the top level of the post.
 
 Positive-floor runs must include a short-lived server-issued run token from `/api/init` or the previous `/api/submit`. The server consumes the token and caps implausible scores by elapsed time before updating the shared tower, leaderboard, achievements, or daily goal.
 
