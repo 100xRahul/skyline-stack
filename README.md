@@ -4,6 +4,13 @@ Drop blocks to build today's skyline — every player in the sub adds a floor, a
 
 Built for [Reddit's Games with a Hook Hackathon](https://redditgameswithahook.devpost.com/).
 
+## Screenshots
+
+| Splash | Start | Playing | After drop |
+|---|---|---|---|
+| ![Splash desktop](notes/skyline-splash-desktop.png) | ![Start desktop](notes/skyline-desktop-start.png) | ![Playing desktop](notes/skyline-desktop-playing.png) | ![After drop desktop](notes/skyline-desktop-after-drop.png) |
+| ![Splash mobile](notes/skyline-splash-mobile.png) | ![Start mobile](notes/skyline-mobile-start.png) | ![Playing mobile](notes/skyline-mobile-playing.png) | ![After drop mobile](notes/skyline-mobile-after-drop.png) |
+
 ## How to play
 
 1. Open a Skyline post in a participating subreddit.
